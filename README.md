@@ -3,7 +3,7 @@
 ### So you don't have to!
 Simple radiotherapy contouring software for local use
 
-#Quickstart
+# Quickstart
 Download a release, unzip, run the Start script (For example: Start.cmd for Windows). A local server will start and the software should open in your default browser.
 
 # Why?
