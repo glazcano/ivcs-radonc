@@ -3,6 +3,9 @@
 ### So you don't have to!
 Simple radiotherapy contouring software for local use
 
+#Quickstart
+Download a release, unzip, run the Start script (For example: Start.cmd for Windows). A local server will start and the software should open in your default browser.
+
 # Why?
 I wanted something portable and easy to run. I think open, easy to distribute software is the best, most efficient way to use AI tools in general. Resources/energy/money are limited, so find an answer and share it! This is specially relevent for niche disciplines like Radiation Oncology
 
