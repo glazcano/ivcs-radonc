@@ -1,0 +1,35 @@
+import {promises as fs} from 'node:fs';
+import path from 'node:path';
+import JSZip from 'jszip';
+import {createDemoRadiotherapyDataset} from '../src/utils/demoData';
+import {DicomBinaryBuffer as B,exportMonacoRtStruct} from '../src/utils/monacoRtStructExporter';
+import {parseDicomByteArray} from '../src/utils/dicomParser';
+import {createLibrary} from '../server/library.mjs';
+import {importRtStruct,compareContours} from '../src/utils/rtStructImporter';
+const root=path.resolve('build/release-common');await fs.mkdir(root,{recursive:true});
+const {series,studies,initialRois,registrationState}=createDemoRadiotherapyDataset();
+const plain=(v:any)=>JSON.parse(JSON.stringify(v,(_,x)=>x instanceof Int16Array || x instanceof Uint8Array?Array.from(x):x));
+const library=createLibrary(path.join(root,'data'));
+if((await library.list()).patients.length)throw new Error('Release staging already contains cases; use a fresh staging directory.');
+const keys=[];for(const study of studies)keys.push((await library.putStudy(plain(study))).key);
+await library.save({key:keys[0],studyKeys:keys,state:plain({rois:initialRois,currentSliceIndex:24,activeRoiId:initialRois[0].id,windowCenter:40,windowWidth:400,registrationState})});
+await library.group({referenceKey:keys[0],secondaryKey:keys[1],transform:registrationState.transforms[studies[1].id]});
+await library.saveSettings({language:'en'});
+const zip=new JSZip();
+for(let j=0;j<studies.length;j++)for(const s of studies[j].slices){
+ const study=studies[j],b=new B(),str=(g:number,e:number,vr:string,v:string)=>b.writeStringElement(g,e,vr,v),us=(g:number,e:number,v:number)=>b.writeElement(g,e,'US',new Uint8Array([v&255,v>>8]));
+ str(8,5,'CS','ISO_IR 192');str(8,8,'CS','DERIVED\\SECONDARY\\SYNTHETIC');str(8,0x16,'UI',s.sopClassUID!);str(8,0x18,'UI',s.sopInstanceUID!);str(8,0x20,'DA','20260909');str(8,0x30,'TM','120000');str(8,0x50,'SH','SYNTHETIC');str(8,0x60,'CS',study.modality);str(8,0x70,'LO','IVCS RT');str(8,0x90,'PN','');str(8,0x1030,'LO',study.studyDescription);str(8,0x103e,'LO',study.seriesDescription);
+ str(0x10,0x10,'PN',study.patientName);str(0x10,0x20,'LO',study.patientId);str(0x10,0x30,'DA','');str(0x10,0x40,'CS','M');str(0x18,0x50,'DS',String(s.sliceThickness));str(0x18,0x5100,'CS','HFS');str(0x20,0x0d,'UI',study.studyInstanceUID!);str(0x20,0x0e,'UI',study.seriesInstanceUID!);str(0x20,0x10,'SH','SYNTHETIC');str(0x20,0x11,'IS',String(j+1));str(0x20,0x13,'IS',String(s.sliceIndex+1));str(0x20,0x32,'DS',s.imagePositionPatient!.join('\\'));str(0x20,0x37,'DS','1\\0\\0\\0\\1\\0');str(0x20,0x52,'UI',study.frameOfReferenceUID!);str(0x20,0x1040,'LO','');str(0x20,0x1041,'DS',String(s.sliceLocation));us(0x28,2,1);str(0x28,4,'CS','MONOCHROME2');us(0x28,0x10,s.rows);us(0x28,0x11,s.cols);str(0x28,0x30,'DS',s.pixelSpacing.join('\\'));
+ for(const [e,v] of [[0x100,16],[0x101,16],[0x102,15],[0x103,1]])us(0x28,e,v);
+ str(0x28,0x1050,'DS',String(s.windowCenter));str(0x28,0x1051,'DS',String(s.windowWidth));str(0x28,0x1052,'DS','0');str(0x28,0x1053,'DS','1');if(j===0)str(0x28,0x1054,'LO','HU');b.writeElement(0x7fe0,0x10,'OW',new Uint8Array(s.huData.buffer));
+ const meta=new B();meta.writeElement(2,1,'OB',new Uint8Array([0,1]));for(const [e,v] of [[2,s.sopClassUID!],[3,s.sopInstanceUID!],[0x10,'1.2.840.10008.1.2.1'],[0x12,'2.25.202609090012345678901234567891']] as const)meta.writeStringElement(2,e,'UI',v);
+ const f=new B();f.writeBytes(new Uint8Array(128));f.writeAsciiString('DICM');f.writeUint16(2);f.writeUint16(0);f.writeAsciiString('UL');f.writeUint16(4);f.writeUint32(meta.getBytes().length);f.writeBytes(meta.getBytes());f.writeBytes(b.getBytes());
+ const bytes=f.getBytes(),parsed=parseDicomByteArray(bytes);if(parsed.seriesInfo.patientId!==study.patientId || parsed.slice.huData.some((v,i)=>v!==s.huData[i]))throw new Error('Synthetic image roundtrip failed');
+ zip.file(study.modality+'/'+String(s.sliceIndex).padStart(3,'0')+'.dcm',bytes);
+}
+const originals=await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'});await library.originals(series.patientId,originals,'SyntheticDemo.zip');
+const rt=exportMonacoRtStruct(series,initialRois),bytes=new Uint8Array(await rt.blob.arrayBuffer());const comparison=compareContours(initialRois,importRtStruct(bytes,series),series);if(comparison.some(c=>c.dice!==1))throw new Error('Demo contours did not roundtrip');
+zip.file('RTSTRUCT_DEMO.dcm',bytes);zip.file('README.txt','Luciano Bello is a fictitious synthetic identity. All CT, MRI and contours were procedurally generated. No real patient data or images. Common frame of reference and identity registration by construction. Simplified educational phantom, not diagnostic images or a treatment prescription. PTV_Demo_5mm is an illustrative expanded ellipsoid, not a validated treatment margin.');
+await fs.mkdir(path.join(root,'demo'),{recursive:true});await fs.writeFile(path.join(root,'demo','Luciano_Bello_SYNTHETIC_DICOM.zip'),await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'}));
+await fs.writeFile(path.join(root,'demo','validation.json'),JSON.stringify({synthetic:true,patientId:series.patientId,patientName:series.patientName,ctSlices:64,mrSlices:64,identicalGeometry:true,registration:'identity by construction',dicomPixelRoundtrip:true,contours:comparison},null,2));
+console.log('Generated and verified synthetic CT + MRI, common geometry, 8 ROIs, pixel-exact DICOM roundtrip and RTSTRUCT roundtrip.');
