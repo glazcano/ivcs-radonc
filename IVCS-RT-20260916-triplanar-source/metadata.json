@@ -1,6 +1,0 @@
-{
-  "name": "IVCS RT",
-  "description": "Visualizador DICOM y estación de contorneo de radioterapia con soporte para paquetes .ZIP, coregistro multimodal (TC, PET-CT, RM) con asistente inteligente, VOI 3D, interpolación morfológica (SDF), brocha, lápiz, polígonos, operaciones booleanas y márgenes.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}
