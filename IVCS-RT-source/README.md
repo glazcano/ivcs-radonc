@@ -9,8 +9,10 @@ IVCS RT began in Google AI Studio and was developed through "vibe coding" with h
 - Local patient library, flexible patient/series filtering and manual saving.
 - Axial contouring, multiplanar views, adjustable 1+2 and 2x2 layouts, and interactive 3D surfaces with transparency and silhouettes.
 - Brush, pencil, polygon, interpolation, Boolean operations, margins and Auto Body.
-- Rigid 3D registration: manual, anatomical landmarks and experimental local automatic alignment.
+- Rigid 3D registration: synchronized triplanar previews (row or adjustable 1+2), physical translation/rotation in any plane, anatomical landmarks, and experimental local automatic alignment with VOI and live proposals.
+- Preservation of linked-series registration with explicit conflict policies and atomic group saving. See [registration guide and limitations](docs/REGISTRATION_TRIPLANAR_20260916.md).
 - DICOM import, including supported compressed transfer syntaxes and validated headerless Implicit VR Little Endian datasets.
+- Enhanced CT/MR and basic parametric maps, irregular parallel acquisitions, temporal phase review with cine, MIP/AIP previews and an ITV union candidate. See [acquisition support and limitations](docs/ACQUISITIONS_20260916.md).
 - RTSTRUCT export with contour round-trip checks; DICOM ZIP with originals; advanced ZIP with selected registered series and DICOM REG.
 
 The server binds to `127.0.0.1`. No account, cloud service or personal API key is required. Patient data stays in the local `data/` folder; it is not encrypted. Dependencies are installed from the internet during development setup, not during normal local use.
@@ -52,6 +54,7 @@ Browser tests are optional and require Playwright and Microsoft Edge. Install Pl
 ```sh
 node tests/dicom-bundle-browser.mjs
 node tests/view-layout-browser.mjs
+node --import tsx tests/registration-browser.mts
 ```
 
 These tests use a temporary copy of the generated synthetic library. Some older browser/release tests require their documented fixture paths or a running local server; they are not part of `pnpm test`.
@@ -68,8 +71,9 @@ The `.gitignore` excludes local data, binaries, archives, screenshots, credentia
 
 This project is not clinically validated. Verify contours, registration and exported DICOM in the destination TPS before clinical use. DICOM REG support is required to recover the advanced ZIP's registration; local tests do not establish compatibility with Monaco 6 or any other TPS. No plan or dose is exported. Compressed images are not certified for dose calculation.
 
-The current volume tools require a regular axial grid. Oblique or irregular image geometry may be rejected; generic volume resampling is not implemented. Original pixels and identifiers are retained in ZIP exports.
+Regular oblique, coronal and sagittal acquisitions are reconstructed into an axial working grid during import. The native volume remains available for registration and original-file export. A reconstructed primary series exports its new derived DICOM images alongside the originals. Nonparallel or irregular acquisitions are rejected. See the reconstruction details and memory limits below.
 
+- [Oblique acquisitions and reconstruction](docs/OBLIQUE_20260916.md)
 - [DICOM ZIP and REG export](docs/DICOM_ZIP_20260915.md)
 - [Layouts and 3D rendering](docs/VIEWS_3D_20260915.md)
 - [DICOM import details](docs/DICOM_FIXES_20260915.md)

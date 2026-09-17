@@ -15,7 +15,13 @@ export interface StructureRoi {
   volumeCm3?: number;
 }
 
+export type PixelValues = Int16Array | Float32Array;
 export interface DicomSlice {
+  inverted?: boolean;
+  pixelType?: "i16" | "f32";
+  units?: string;
+  frameNumber?: number;
+  valid?: Uint8Array;
   sourceRaw?: boolean;
   sourceTransferSyntax?: string;
   sourceCompressed?: boolean;
@@ -31,7 +37,7 @@ export interface DicomSlice {
   windowWidth: number; // HU
   rescaleIntercept: number;
   rescaleSlope: number;
-  huData: Int16Array; // Calculated HU values (length: rows * cols)
+  huData: PixelValues; // Calculated HU values (length: rows * cols)
   minHU: number;
   maxHU: number;
   fileName?: string;
@@ -42,6 +48,9 @@ export interface DicomSlice {
 }
 
 export interface DicomSeries {
+  acquisitionDimensions?: Record<string,string>;
+  sourceVolume?: DicomSeries;
+  resampling?: {method:string; spacingMm:number; sourceSeriesUID:string; irregular?:boolean; gaps?:number};
   acquisitionKey?: string;
   patientName: string;
   patientId: string;
@@ -143,6 +152,9 @@ export interface ContourHistoryEntry {
 export type ModalityType = 'CT' | 'MR' | 'PT' | 'PET' | 'PETCT';
 
 export interface ImageStudy {
+  acquisitionDimensions?: Record<string,string>;
+  sourceVolume?: DicomSeries;
+  resampling?: DicomSeries["resampling"];
   acquisitionKey?: string;
   studyInstanceUID?: string;
   seriesInstanceUID?: string;
@@ -198,6 +210,8 @@ export type ColorMapType = 'hot_iron' | 'rainbow' | 'cyan' | 'grayscale';
 export type RigidTransform3D = RegistrationTransform;
 
 export interface RegistrationState {
+  detachedSeriesIds?: string[];
+  relationPolicies?: Record<string,'preserve'|'dicom'|'saved'|'single'>;
   active: boolean;
   referenceStudyId: string;
   secondaryStudyId: string;

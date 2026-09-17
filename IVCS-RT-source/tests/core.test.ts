@@ -41,9 +41,9 @@ test('sign extends 12 bit data and ignores unused bits',()=>assert.deepEqual(Arr
 test('MR without intercept retains original intensity',()=>assert.equal(parseDicomByteArray(dicom({modality:'MR'})).slice.huData[1],1));
 test('applies explicit rescale intercept',()=>assert.equal(parseDicomByteArray(dicom({intercept:'-1024'})).slice.huData[1],-1023));
 test('rejects compressed pixels',()=>assert.throws(()=>parseDicomByteArray(dicom({syntax:'1.2.840.10008.1.2.4.50'})),/compresión|sintaxis/));
-test('rejects truncated and overflowing pixels',()=> {
+test('rejects truncated pixels and preserves unsigned intensities beyond Int16',()=> {
   assert.throws(()=>parseDicomByteArray(dicom({truncate:true})));
-  assert.throws(()=>parseDicomByteArray(dicom({values:[65535,0,0,0]})),/rango/);
+  const s=parseDicomByteArray(dicom({values:[65535,0,0,0]})).slice;assert.equal(s.pixelType,'f32');assert.equal(s.huData[0],65535);
 });
 test('sorts slices and consistently selects first CT as reference',async()=> {
  const file=(options:any)=>new File([dicom(options)],'image.dcm');

@@ -115,7 +115,7 @@ export function zToVIndex(z: number, numSlices: number, isZAscending: boolean): 
  */
 export function createHuLut(windowCenter: number, windowWidth: number): Uint8Array {
   const lut = new Uint8Array(65536);
-  const ww = Math.max(1, windowWidth);
+  const ww = Math.max(1e-12, windowWidth);
   const halfWw = ww / 2;
   const minHu = windowCenter - halfWw;
 
@@ -205,7 +205,9 @@ export function renderCoronalSliceToCanvas(
       const hu = huData[rowOffset + x];
       // Lookup mapped grayscale intensity
       const lutIdx = Math.max(0, Math.min(65535, hu + 32768));
-      const gray = lut[lutIdx];
+      let gray = Number.isInteger(hu) && hu>=-32768 && hu<=32767?lut[lutIdx]:Math.max(0,Math.min(255,Math.round((hu-options.windowCenter)/Math.max(1e-12,options.windowWidth)*255+127.5)));
+      if(slice.inverted)gray=255-gray;
+      if(slice.valid && !slice.valid[rowOffset+x])gray=0;
 
       let rOut = gray;
       let gOut = gray;
@@ -302,7 +304,9 @@ export function renderSagittalSliceToCanvas(
     for (let y = 0; y < rows; y++) {
       const hu = huData[y * cols + clampedX];
       const lutIdx = Math.max(0, Math.min(65535, hu + 32768));
-      const gray = lut[lutIdx];
+      let gray = Number.isInteger(hu) && hu>=-32768 && hu<=32767?lut[lutIdx]:Math.max(0,Math.min(255,Math.round((hu-options.windowCenter)/Math.max(1e-12,options.windowWidth)*255+127.5)));
+      if(slice.inverted)gray=255-gray;
+      if(slice.valid && !slice.valid[y*cols+clampedX])gray=0;
 
       let rOut = gray;
       let gOut = gray;

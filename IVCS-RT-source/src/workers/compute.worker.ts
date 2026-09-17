@@ -23,7 +23,7 @@ self.onmessage=async({data})=>{
       result={masks:bodyMasks,review:reviewBody(bodySlices,bodyMasks)};
       self.postMessage({result},{transfer:Object.values(bodyMasks).map(m=>m.buffer)});return;
     }
-    else if(kind==='registration')result=automaticRigid3d(args[0],args[1],args[2],p=>self.postMessage({progress:p}));
+    else if(kind==='registration')result=automaticRigid3d(args[0],args[1],args[2],p=>self.postMessage({progress:p}),args[3]);
     else if(kind==='body')result=await contour.generateBodyVolumeForSeries(args[0],args[1],(current,total)=>self.postMessage({progress:{current,total,percent:Math.round(current/total*100)}}));
     else if(kind==='export'){
       result=exportMonacoRtStruct(args[0],args[1],args[2]);

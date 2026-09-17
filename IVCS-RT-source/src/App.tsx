@@ -9,6 +9,7 @@ import { LibraryMenu } from './components/LibraryMenu';
 import { registerStudy, archiveOriginals, openLibraryStudy, libraryIndex, saveRegistrationGroup, LibraryGroup } from './utils/libraryClient';
 import { Session, serializeSession, parseSession, saveSession, loadSession } from './utils/session';
 import React, { useState, useEffect, useCallback } from 'react';
+import {TemporalReview} from './components/TemporalReview';
 import { Header } from './components/Header';
 import { Viewport } from './components/Viewport';
 import { StructurePanel } from './components/StructurePanel';
@@ -90,7 +91,7 @@ export default function App() {
     fusionOpacity: 0.55,
     checkerboardSize: 32,
     splitPosition: 0.5,
-    secondaryColorMap: 'hot_iron',
+    secondaryColorMap: 'grayscale',
     secondaryWindowCenter: 120,
     secondaryWindowWidth: 240,
     voi: {
@@ -131,6 +132,7 @@ export default function App() {
   const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const operationAbort=React.useRef<AbortController|null>(null);
+  const [showTemporal,setShowTemporal]=useState(false);
   const [showHelp, setShowHelp] = useState<boolean>(false);
 
   // Helper to snapshot all ROIs using lightweight structural sharing (masks are immutable once created)
@@ -220,7 +222,7 @@ export default function App() {
         }
         if(secondary && !saved.studies.some(s=>s.id===secondary.id))saved.studies.push(await loadSecondaryStudy(secondary.key));
         if(Object.values(transforms).some((t:any)=>t.model!=='rigid3d'))throw new Error('Este grupo utiliza el antiguo corregistro 2D. Abra las series y cree una alineación 3D nueva.');
-        saved.registrationState = {...saved.registrationState,active:true,transforms,secondaryStudyId:secondary?.id || saved.registrationState.referenceStudyId};
+        saved.registrationState = {...saved.registrationState,active:true,transforms,detachedSeriesIds:group.detachedSeriesIds,relationPolicies:group.relationPolicies,secondaryStudyId:secondary?.id || saved.registrationState.referenceStudyId};
       }
       applySession(saved); setErrorMessage(null);
     } catch(e) {setErrorMessage((e as Error).message);throw e;}
@@ -265,10 +267,12 @@ export default function App() {
 
   const [dicomImport,setDicomImport]=useState<ImportSeries[]|null>(null);
   // Keep every imported series and preserve existing contours on re-import.
-  const loadDicomSelection = async (files: File[],splitSeriesUIDs=new Set<string>()) => {
+  const loadDicomSelection = async (files: File[],splitSeriesUIDs=new Set<string>(),selectedKeys?:Set<string>) => {
     setIsLoading(true); setLoadingMessage(tr("Importando DICOM a la biblioteca local…"));setErrorMessage(null);
     try {
-      const parsed = await parseMultipleDicomFiles(files,setLoadingMessage,splitSeriesUIDs);
+      operationAbort.current=new AbortController();
+      const parsed = await parseMultipleDicomFiles(files,setLoadingMessage,splitSeriesUIDs,selectedKeys,operationAbort.current?.signal);
+      operationAbort.current?.signal.throwIfAborted();operationAbort.current=null;
       const imported: ImageStudy[] = (parsed as any).studies;
       if (!imported?.length || parsed.patientId === 'ID_DESCONOCIDO') throw new Error('Se necesita una ID de paciente DICOM para la biblioteca.');
       const keys: string[] = [];
@@ -277,7 +281,7 @@ export default function App() {
       await archiveOriginals(parsed.patientId,files);
       applySession(await openLibraryStudy(keys[0]));
     } catch(e) {setErrorMessage((e as Error).message);}
-    finally {setIsLoading(false);}
+    finally {setIsLoading(false);operationAbort.current=null;}
   };
 
   const handleFilesSelected=async(files:File[])=>{
@@ -285,7 +289,7 @@ export default function App() {
       await confirmLeave();setIsLoading(true);setErrorMessage(null);
       setLoadingMessage(tr('Analizando series DICOM…'));
       const groups=await inspectDicomFiles(files);
-      if(groups.length>1 || groups.some(g=>g.compressed || g.lossy || g.unsupported)){
+      if(groups.length>1 || groups.some(g=>g.compressed || g.lossy || g.unsupported || g.enhanced)){
         setIsLoading(false);setDicomImport(groups);
       }else await loadDicomSelection(groups[0].files);
     }catch(e){setErrorMessage((e as Error).message);setIsLoading(false);}
@@ -868,7 +872,7 @@ export default function App() {
       {leaveDialog && <div className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center"><section role="dialog" aria-label={tr("Cambios sin guardar")} className="bg-zinc-900 text-zinc-200 rounded border border-zinc-600 p-6"><h2>{" "}{tr("Hay cambios sin guardar")}{" "}</h2><p className="text-sm my-3">{" "}{tr("¿Cómo desea continuar antes de abrir otro caso?")}{" "}</p><div className="flex gap-3">{[["save",tr("Guardar y continuar")],["discard",tr("Descartar")],["cancel",tr("Cancelar")]].map(([id,label])=><button key={id} className="px-3 py-2 bg-zinc-700 rounded" onClick={()=>{leaveDialog.resolve(id);setLeaveDialog(null);}}>{label}</button>)}</div></section></div>}
       {/* Top Header */}
       <Header activeRoiName={rois.find(r=>r.id===activeRoiId)?.name}
-        library={<LibraryMenu busy={isLoading || !sessionReady} onOpen={handleOpenLibrary} />}
+        library={<><LibraryMenu busy={isLoading || !sessionReady} onOpen={handleOpenLibrary} /><button disabled={!series || isLoading} className="px-2 py-1.5 border border-zinc-600 rounded text-xs disabled:opacity-40" onClick={()=>setShowTemporal(true)}>{tr("Revisión 4D")}</button></>}
         series={series}
         currentSliceIndex={currentSliceIndex}
         rois={rois}
@@ -887,10 +891,11 @@ export default function App() {
         onOpenRegistrationModal={() => setShowRegistrationModal(true)}
       />
 
+      {showTemporal && series && <TemporalReview rois={rois} onUnion={roi=>{pushUndo();setRois(p=>[...p,roi]);setActiveRoiId(roi.id);}} series={series} sliceIndex={currentSliceIndex} center={windowCenter} width={windowWidth} onClose={()=>setShowTemporal(false)} onOpen={async key=>{await confirmLeave();const saved=await openLibraryStudy(key),z=series.slices[currentSliceIndex].imagePositionPatient![2];saved.currentSliceIndex=saved.series.slices.reduce((best,s,i)=>Math.abs(s.imagePositionPatient![2]-z)<Math.abs(saved.series.slices[best].imagePositionPatient![2]-z)?i:best,0);saved.windowCenter=windowCenter;saved.windowWidth=windowWidth;applySession(saved);}}/>}
       {/* Center Layout: Viewport + Right Structure Panel */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* Medical Canvas Viewport */}
-        <Viewport onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal}
+        <Viewport onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={showTemporal || isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal}
           series={series}
           currentSliceIndex={currentSliceIndex}
           onSliceChange={setCurrentSliceIndex}
@@ -1047,7 +1052,7 @@ export default function App() {
         />
       )}
 
-      {dicomImport && <DicomImportModal groups={dicomImport} onClose={()=>setDicomImport(null)} onLoad={groups=>{setDicomImport(null);void loadDicomSelection(groups.flatMap(g=>g.files),new Set(groups.filter(g=>g.acquisitionKey).map(g=>g.seriesUID!)));}}/>}
+      {dicomImport && <DicomImportModal groups={dicomImport} onClose={()=>setDicomImport(null)} onLoad={groups=>{setDicomImport(null);void loadDicomSelection([...new Set(groups.flatMap(g=>g.files))],new Set(groups.filter(g=>g.acquisitionKey).map(g=>g.seriesUID!)),new Set(groups.map(g=>g.key)));}}/>}
       {/* Help Modal */}
       <HelpModal isOpen={showHelp} onClose={() => setShowHelp(false)} />
     </div>

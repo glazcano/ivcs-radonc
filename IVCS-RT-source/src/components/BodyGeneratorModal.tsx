@@ -51,7 +51,7 @@ export function BodyGeneratorModal({isOpen,onClose,series,currentSliceIndex,rois
     controller.current?.abort();setProcessing(false);setResult(null);setError('');
     if(isOpen && series){
       const existing=rois.find(r=>!r.locked && (r.type==='EXTERNAL' || /BODY|EXTERNAL/i.test(r.name)));
-      setMode(existing?'overwrite':'new');setTarget(existing?.id || '');
+      setMode('new');setTarget(existing?.id || '');
       setStart(1);setEnd(series.slices.length);setPosition(Math.min(currentSliceIndex,series.slices.length-1));
     }
     return ()=>controller.current?.abort();

@@ -1,6 +1,9 @@
-import {readDicomDataset,transferSyntax,acquisitionToken} from './dicomDataset.mjs';
+import {readDicomDataset,transferSyntax,acquisitionToken,acquisitionDimensions} from './dicomDataset.mjs';
 import {decodeCompressedDicom} from './decodeCompressedDicom';
 import {dicomText} from './dicomText';
+import {frameDataset} from './dicomFrames.mjs';
+import {axialForViewer} from './resampleClient';
+import {acquisitionGeometry} from './volumeSampling';
 import { sliceDistance, validateVolume } from './geometry';
 import dicomParser, { DataSet } from 'dicom-parser';
 import JSZip from 'jszip';
@@ -19,11 +22,12 @@ export interface ParsedSeriesInfo extends Partial<DicomSeries> {
 
 export function parseDicomByteArray(
   byteArray: Uint8Array,
-  fileName: string = 'slice.dcm'
+  fileName: string = 'slice.dcm',
+  frame?: {dataSet:DataSet; index:number}
 ): { slice: DicomSlice; seriesInfo: ParsedSeriesInfo } {
   let dataSet: DataSet;
   try {
-    dataSet = readDicomDataset(byteArray);
+    dataSet = frame?.dataSet || readDicomDataset(byteArray);
   } catch (err) {
     throw new Error(`Error al leer archivo DICOM: ${fileName} - ${(err as Error).message}`);
   }
@@ -133,7 +137,8 @@ export function parseDicomByteArray(
   const pixelRepresentation = dataSet.uint16('x00280103') || 0; // 0 = unsigned, 1 = signed
 
   // Pixel Data Element (7FE0, 0010)
-  const pixelDataElement = dataSet.elements['x7fe00010'];
+  const floatPixels=!!dataSet.elements['x7fe00008'];
+  const pixelDataElement = dataSet.elements['x7fe00010'] || dataSet.elements['x7fe00008'];
   if (!pixelDataElement) {
     throw new Error(`No se encontraron datos de píxeles (PixelData 7FE0,0010) en el archivo ${fileName}`);
   }
@@ -149,28 +154,51 @@ export function parseDicomByteArray(
   }
   if (!Number.isFinite(rescaleSlope) || rescaleSlope === 0 || !Number.isFinite(rescaleIntercept)) throw new Error(fileName + ': transformación de intensidad inválida.');
   if (!['1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'].includes(syntax || '') || pixelDataElement.encapsulatedPixelData) throw new Error(fileName + ': compresión o sintaxis DICOM no compatible. Exporte imágenes sin compresión.');
-  if ((dataSet.intString('x00280008') || 1) !== 1 || (dataSet.uint16('x00280002') || 1) !== 1 || dataSet.string('x00280004') !== 'MONOCHROME2') throw new Error(fileName + ': solo se admiten imágenes MONOCHROME2 de un cuadro.');
+  if ((!frame && (dataSet.intString('x00280008') || 1) !== 1) || (dataSet.uint16('x00280002') || 1) !== 1 || !['MONOCHROME1','MONOCHROME2'].includes(dataSet.string('x00280004') || '')) throw new Error(fileName + ': formato de imagen no compatible.');
   const bitsStored = dataSet.uint16('x00280101') || bitsAllocated;
   const highBit = dataSet.uint16('x00280102') ?? (bitsStored-1);
-  if (![8,16].includes(bitsAllocated) || bitsStored < 1 || bitsStored > bitsAllocated || highBit !== bitsStored-1 || ![0,1].includes(pixelRepresentation)) throw new Error(fileName + ': formato de píxel no compatible.');
+  if ((floatPixels?bitsAllocated!==32:![8,16].includes(bitsAllocated)) || bitsStored < 1 || bitsStored > bitsAllocated || highBit !== bitsStored-1 || ![0,1].includes(pixelRepresentation)) throw new Error(fileName + ': formato de píxel no compatible.');
   if (!dataSet.uint16('x00280010') || !dataSet.uint16('x00280011') || !pixelSpacingStr || !imgPosStr || !imgOrientStr) throw new Error(fileName + ': faltan dimensiones o geometría DICOM.');
-  const offset = pixelDataElement.dataOffset;
   const numPixels = rows * cols;
   const byteLength = numPixels * bitsAllocated / 8;
-  if (pixelDataElement.length < byteLength || offset + byteLength > dataSet.byteArray.length) throw new Error(fileName + ': datos de píxel truncados.');
+  const frameOffset=(frame?.index || 0)*byteLength,offset=pixelDataElement.dataOffset+frameOffset;
+  if (pixelDataElement.length < frameOffset+byteLength || offset + byteLength > dataSet.byteArray.length) throw new Error(fileName + ': datos de píxel truncados.');
   const view = new DataView(dataSet.byteArray.buffer, dataSet.byteArray.byteOffset + offset, byteLength);
-  const huData = new Int16Array(numPixels);
+  // Preserve fractional rescale values and unsigned values beyond Int16.
+  let floating=floatPixels,huData:Int16Array|Float32Array = floatPixels?new Float32Array(numPixels):new Int16Array(numPixels);
+  let units=dataSet.string('x00281054') || dataSet.string('x00541001') || (modality==='CT'?'HU':undefined);
+  let mappingRange:[number,number]|undefined;
+  const mappings=(dataSet.elements.x00409096 as any)?.items;
+  if(mappings){
+    if(mappings.length!==1)throw new Error('Multiple real-world mappings require explicit selection and are not supported.');
+    const map=mappings[0].dataSet,slope=map.double('x00409225'),intercept=map.double('x00409224');
+    if(!Number.isFinite(slope) || slope===0 || !Number.isFinite(intercept) || map.elements.x00409212)throw new Error('Only a single linear real-world value mapping is supported.');
+    if((slopeStr && Number(slopeStr)!==1) || (interceptStr && Number(interceptStr)!==0))throw new Error('Combined modality rescale and real-world mapping requires explicit interpretation.');
+    rescaleSlope=slope;rescaleIntercept=intercept;
+    const integer=(tag:string)=>floatPixels || pixelRepresentation===1?map.int16(tag):map.uint16(tag);
+    mappingRange=[map.elements.x00409214?map.double('x00409214'):integer('x00409216'),map.elements.x00409213?map.double('x00409213'):integer('x00409211')];
+    if(!mappingRange.every(Number.isFinite) || mappingRange[0]>mappingRange[1])throw new Error('Missing or invalid real-world mapping range.');
+    const unit=map.elements.x004008ea?.items?.[0]?.dataSet;units=unit?.string('x00080100') || unit?.string('x00080104');
+    if(!units)throw new Error('Missing real-world measurement units.');
+  }
   let minHU = Infinity, maxHU = -Infinity;
   for (let i = 0; i < numPixels; i++) {
-    let raw = (bitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i*2, syntax !== '1.2.840.10008.1.2.2')) & (2**bitsStored-1);
-    if (pixelRepresentation === 1 && raw >= 2**(bitsStored-1)) raw -= 2**bitsStored;
-    const value = Math.round(raw*rescaleSlope + rescaleIntercept);
-    if (!Number.isFinite(value) || value < -32768 || value > 32767) throw new Error(fileName + ': intensidad fuera del rango admitido por el visor.');
+    let raw = floatPixels?view.getFloat32(i*4,syntax !== '1.2.840.10008.1.2.2'):(bitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i*2, syntax !== '1.2.840.10008.1.2.2')) & (2**bitsStored-1);
+    if (!floatPixels && pixelRepresentation === 1 && raw >= 2**(bitsStored-1)) raw -= 2**bitsStored;
+    if(mappingRange && (raw<mappingRange[0] || raw>mappingRange[1]))throw new Error('Pixel values outside the declared real-world mapping range are not extrapolated.');
+    const scaled=raw*rescaleSlope + rescaleIntercept;
+    if(!floating && (!Number.isInteger(scaled) || scaled<-32768 || scaled>32767)){floating=true;huData=new Float32Array(huData);}
+    const value = floating?Math.fround(scaled):scaled;
+    if (!Number.isFinite(value) || (!floating && (value < -32768 || value > 32767))) throw new Error(fileName + ': intensidad fuera del rango admitido por el visor.');
     huData[i] = value;
     minHU = Math.min(minHU, value); maxHU = Math.max(maxHU, value);
   }
 
   const slice: DicomSlice = {
+    pixelType:floating?'f32':'i16',
+    inverted:dataSet.string('x00280004')==='MONOCHROME1',
+    units,
+    frameNumber: (dataSet as any).frameNumber,
     id: `slice-${Math.random().toString(36).substring(2, 9)}`,
     sliceIndex: 0,
     rows,
@@ -211,6 +239,7 @@ export function parseDicomByteArray(
     studyInstanceUID,
     frameOfReferenceUID,
     acquisitionKey: acquisitionToken(dataSet)
+    ,acquisitionDimensions: Object.fromEntries(acquisitionDimensions(dataSet))
   };
 
   return { slice, seriesInfo };
@@ -278,7 +307,7 @@ export async function extractDicomFromZip(
 
   for (const entry of entries) {
     const bytes = await entry.file.async('uint8array');
-    if (isLikelyDicom(bytes, entry.name)) results.push(await parseDicomImage(bytes, entry.name));
+    if (isLikelyDicom(bytes, entry.name)) results.push(...await parseDicomFrames(bytes, entry.name));
   }
 
   if (results.length === 0) {
@@ -291,7 +320,8 @@ export async function extractDicomFromZip(
 export async function parseMultipleDicomFiles(
   files: File[],
   onProgress?: (msg: string) => void,
-  splitSeriesUIDs = new Set<string>()
+  splitSeriesUIDs = new Set<string>(),
+  selectedKeys?:Set<string>,signal?:AbortSignal
 ): Promise<DicomSeries> {
   if (files.length === 0) {
     throw new Error('No se seleccionaron archivos.');
@@ -300,6 +330,7 @@ export async function parseMultipleDicomFiles(
   const allResults: Array<{ slice: DicomSlice; seriesInfo: Partial<DicomSeries> }> = [];
 
   for (let i = 0; i < files.length; i++) {
+    signal?.throwIfAborted();
     const file = files[i];
     const isZip = file.name.toLowerCase().endsWith('.zip') || 
                   file.type === 'application/zip' || 
@@ -312,8 +343,7 @@ export async function parseMultipleDicomFiles(
       allResults.push(...zipResults);
     } else {
       try {
-        const parsed = await parseDicomFile(file);
-        allResults.push(parsed);
+        allResults.push(...await parseDicomFrames(new Uint8Array(await file.arrayBuffer()),file.name,selectedKeys,signal));
       } catch (err) {
         throw err;
       }
@@ -328,12 +358,15 @@ export async function parseMultipleDicomFiles(
 
   // Repeated positions in one series may represent different acquisitions, never duplicate-drop them.
   const positions=new Map<string,Set<string>>();
+  const dimensionGroups=new Map<string,Set<string>>();
+  for(const item of allResults){const uid=item.seriesInfo.seriesInstanceUID || '',seen=dimensionGroups.get(uid) || new Set<string>();seen.add(JSON.stringify(item.seriesInfo.acquisitionDimensions || {}));dimensionGroups.set(uid,seen);}
   for(const item of allResults){const uid=item.seriesInfo.seriesInstanceUID || '',pos=JSON.stringify(item.slice.imagePositionPatient);const seen=positions.get(uid) || new Set<string>();if(seen.has(pos))splitSeriesUIDs.add(uid);seen.add(pos);positions.set(uid,seen);}
   // Group slices by Series Instance UID or modality
   const groupMap = new Map<string, Array<{ slice: DicomSlice; seriesInfo: Partial<DicomSeries> }>>();
   for (const item of allResults) {
     const info = item.seriesInfo as any;
-    const split=splitSeriesUIDs.has(info.seriesInstanceUID);
+    if(selectedKeys && !selectedKeys.has(info.patientId+'|'+info.seriesInstanceUID) && !selectedKeys.has(info.patientId+'|'+info.seriesInstanceUID+'|'+info.acquisitionKey))continue;
+    const split=splitSeriesUIDs.has(info.seriesInstanceUID) || (dimensionGroups.get(info.seriesInstanceUID)?.size || 0)>1;
     if(split && !info.acquisitionKey)throw new Error('Posiciones repetidas sin identificador de adquisición; no se mezclaron imágenes.');
     const key = info.seriesInstanceUID+(split?'|'+info.acquisitionKey:'');
     if(!split)delete info.acquisitionKey;
@@ -348,19 +381,21 @@ export async function parseMultipleDicomFiles(
 
   let studyIdx = 1;
   for (const [key, items] of groupMap.entries()) {
+    signal?.throwIfAborted();
     items.sort((a, b) => sliceDistance(a.slice) - sliceDistance(b.slice));
     const sortedSlices = items.map((r, idx) => ({
       ...r.slice,
       sliceIndex: idx
     }));
+    if(new Set(sortedSlices.map(s=>s.units || '')).size>1)throw new Error('La adquisición contiene unidades de intensidad diferentes; no se combinaron sus cuadros.');
 
-    validateVolume(sortedSlices);
+    acquisitionGeometry(sortedSlices,true);
     const info = items[0].seriesInfo;
     const modality = info.modality || 'CT';
     const isPet = modality.includes('PET') || modality === 'PT';
     const isMr = modality.includes('MR');
 
-    const study: ImageStudy = {
+    let study: ImageStudy = {
       ...info,
       id: `study-${key || studyIdx}`,
       patientName: info.patientName || 'Paciente Radioterapia',
@@ -374,12 +409,17 @@ export async function parseMultipleDicomFiles(
       defaultWindowWidth: sortedSlices[Math.floor(sortedSlices.length / 2)]?.windowWidth || 400
     };
 
+    const native=study;study=await axialForViewer(study,onProgress,signal) as ImageStudy;
+    if(study!==native)study.id='study-'+study.seriesInstanceUID;
     studies.push(study);
 
     // Primary series: prefer CT if available, or first series
     if (!primarySeries || (primarySeries.modality !== 'CT' && modality === 'CT')) {
       primarySeries = {
+        sourceVolume: study.sourceVolume,
+        resampling: study.resampling,
         acquisitionKey: study.acquisitionKey,
+        acquisitionDimensions: study.acquisitionDimensions,
         patientName: study.patientName,
         patientId: study.patientId,
         studyDescription: study.studyDescription,
@@ -387,7 +427,7 @@ export async function parseMultipleDicomFiles(
         modality: study.modality,
         slices: study.slices,
         studyInstanceUID: info.studyInstanceUID,
-        seriesInstanceUID: info.seriesInstanceUID,
+        seriesInstanceUID: study.seriesInstanceUID,
         frameOfReferenceUID: info.frameOfReferenceUID,
         patientBirthDate: info.patientBirthDate,
         patientSex: info.patientSex,
@@ -428,14 +468,31 @@ export async function parseDicomImage(bytes:Uint8Array,name:string){
  parsed.slice.sourceLossy=ds.string('x00282110')==='01' || !losslessSyntaxes.includes(syntax);
  return parsed;
 }
+export async function parseDicomFrames(bytes:Uint8Array,name:string,selectedKeys?:Set<string>,signal?:AbortSignal){
+ const original=readDicomDataset(bytes,{untilTag:'x7fe00010'}),syntax=transferSyntax(original);
+ if(!nativeSyntaxes.includes(syntax) && !compressedSyntaxes.includes(syntax))throw new Error(name+': unsupported DICOM transfer syntax '+syntax);
+ const decoded=nativeSyntaxes.includes(syntax)?bytes:await decodeCompressedDicom(bytes),ds=readDicomDataset(decoded),count=ds.intString('x00280008') || 1;
+ if(!Number.isInteger(count) || count<1 || count>100000)throw new Error('Invalid DICOM frame count.');
+ const results=[];
+ for(let index=0;index<count;index++){
+  signal?.throwIfAborted();
+  const view=frameDataset(ds,index),key=dicomText(ds,'x00100020')+'|'+ds.string('x0020000e');
+  if(selectedKeys && !selectedKeys.has(key) && !selectedKeys.has(key+'|'+acquisitionToken(view)))continue;
+  const parsed=parseDicomByteArray(decoded,name,{dataSet:view,index});
+  parsed.slice.sourceTransferSyntax=syntax;parsed.slice.sourceCompressed=!nativeSyntaxes.includes(syntax);parsed.slice.sourceLossy=original.string('x00282110')==='01' || (parsed.slice.sourceCompressed && !losslessSyntaxes.includes(syntax));results.push(parsed);
+  if(index%16===15)await new Promise(resolve=>setTimeout(resolve,0));
+ }
+ return results;
+}
 export interface ImportSeries {
+ enhanced?:boolean;frames?:number;
  raw?:boolean;acquisitionKey?:string;seriesUID?:string;
  key:string;patientId:string;patientName:string;description:string;modality:string;files:File[];
  compressed:boolean;lossy:boolean;syntaxes:string[];unsupported:boolean;
 }
 export async function inspectDicomFiles(files:File[],onProgress?:(text:string)=>void):Promise<ImportSeries[]>{
  const groups=new Map<string,ImportSeries>();
- const fileMeta=new Map<File,{position:string;acquisition:string}>();
+ const fileMeta=new Map<File,{position:string;acquisition:string;dimensions:boolean}>();
  const inspect=async(file:File)=>{
   const bytes=new Uint8Array(await file.arrayBuffer());
   if(!isLikelyDicom(bytes,file.name))return;
@@ -443,13 +500,23 @@ export async function inspectDicomFiles(files:File[],onProgress?:(text:string)=>
   if(!ds.uint16('x00280010') || !ds.uint16('x00280011'))return; // RTSTRUCT, DICOMDIR, reports are not image series.
   const uid=ds.string('x0020000e');if(!uid)throw new Error(file.name+': missing Series Instance UID');
   const patientId=dicomText(ds,'x00100020'),key=patientId+'|'+uid,syntax=transferSyntax(ds);
+  if((ds.intString('x00280008') || 1)>1 || ds.elements.x52009230){
+   const count=ds.intString('x00280008') || 1;
+   for(let index=0;index<count;index++){
+    const view=frameDataset(ds,index),token=acquisitionToken(view),frameKey=key+(token?'|'+token:'');
+    let g=groups.get(frameKey);
+    if(!g){g={key:frameKey,patientId,patientName:cleanPatientName(dicomText(ds,'x00100010')),description:(dicomText(ds,'x0008103e') || uid)+(token?' · '+token:''),modality:ds.string('x00080060') || '',files:[],compressed:!nativeSyntaxes.includes(syntax),lossy:ds.string('x00282110')==='01' || (!nativeSyntaxes.includes(syntax) && !losslessSyntaxes.includes(syntax)),syntaxes:[syntax],unsupported:![...nativeSyntaxes,...compressedSyntaxes].includes(syntax) || !['MONOCHROME1','MONOCHROME2'].includes(ds.string('x00280004') || ''),seriesUID:uid,acquisitionKey:token || undefined,enhanced:true,frames:0};groups.set(frameKey,g);}
+    if(!g.files.includes(file))g.files.push(file);g.frames!++;
+   }
+   return;
+  }
   let group=groups.get(key);
   if(!group){group={key,patientId,patientName:cleanPatientName(dicomText(ds,'x00100010')),description:dicomText(ds,'x0008103e') || uid,modality:ds.string('x00080060') || '',files:[],compressed:false,lossy:false,syntaxes:[],unsupported:false};groups.set(key,group);}
-  fileMeta.set(file,{position:ds.string('x00200032') || '',acquisition:acquisitionToken(ds)});
+  fileMeta.set(file,{position:ds.string('x00200032') || '',acquisition:acquisitionToken(ds),dimensions:acquisitionDimensions(ds).length>0});
   group.raw ||= !!ds.ivcsRaw;group.seriesUID=uid;
   group.files.push(file);group.compressed ||= !nativeSyntaxes.includes(syntax);
   group.lossy ||= ds.string('x00282110')==='01' || (!nativeSyntaxes.includes(syntax) && !losslessSyntaxes.includes(syntax));
-  group.unsupported ||= ![...nativeSyntaxes,...compressedSyntaxes].includes(syntax) || (ds.intString('x00280008') || 1)!==1 || ds.string('x00280004')!=='MONOCHROME2';
+  group.unsupported ||= ![...nativeSyntaxes,...compressedSyntaxes].includes(syntax) || (ds.intString('x00280008') || 1)!==1 || !['MONOCHROME1','MONOCHROME2'].includes(ds.string('x00280004') || '');
   if(!group.syntaxes.includes(syntax))group.syntaxes.push(syntax);
  };
  for(const file of files){
@@ -464,8 +531,10 @@ export async function inspectDicomFiles(files:File[],onProgress?:(text:string)=>
  if(!groups.size)throw new Error('No DICOM image series found.');
  const result:ImportSeries[]=[];
  for(const group of groups.values()){
+  if(group.enhanced){result.push(group);continue;}
   const positions=group.files.map(f=>fileMeta.get(f)!.position);
-  if(new Set(positions).size===positions.length){result.push(group);continue;}
+  const dimensions=group.files.filter(f=>fileMeta.get(f)!.dimensions).map(f=>fileMeta.get(f)!.acquisition);
+  if(new Set(positions).size===positions.length && new Set(dimensions).size<=1){result.push(group);continue;}
   const acquisitions=new Map<string,File[]>();
   for(const file of group.files){const token=fileMeta.get(file)!.acquisition;if(!token)throw new Error('Posiciones repetidas sin identificador de adquisición; no se mezclaron imágenes.');const list=acquisitions.get(token)||[];list.push(file);acquisitions.set(token,list);}
   for(const [token,list] of acquisitions)result.push({...group,key:group.key+'|'+token,acquisitionKey:token,description:group.description+' · '+token,files:list});

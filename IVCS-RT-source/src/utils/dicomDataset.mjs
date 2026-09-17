@@ -16,6 +16,22 @@ export function readDicomDataset(bytes,options={}){
 }
 export const transferSyntax=ds=>ds.ivcsRaw?IMPLICIT_LE:ds.string('x00020010') || '';
 export const acquisitionToken=ds=>{
+ const dimensions=acquisitionDimensions(ds);
+ if(dimensions.length)return dimensions.map(([name,value])=>name+':'+value).join('|');
  const number=ds.string('x00200012')?.trim(),time=ds.string('x00080032')?.trim();
  return number?'acq:'+number:time?'time:'+time:'';
 };
+// These dimensions identify distinct volumes even when coverage does not overlap.
+// AcquisitionTime alone is deliberately only a fallback for repeated positions:
+// it can change on every slice in a single volume.
+export function acquisitionDimensions(ds){
+ const result=[];
+ for(const [name,tag] of [['phase','x00200100'],['echo','x00180086'],['TE','x00180081']]){
+  const value=ds.string(tag)?.trim();if(value)result.push([name,value]);
+ }
+ const b=ds.elements['x00189087'];if(b){const value=ds.double('x00189087');if(Number.isFinite(value))result.push(['b',String(value)]);}
+ const gradient=ds.elements['x00189089'];if(gradient){const values=[0,1,2].map(i=>ds.double('x00189089',i));if(values.every(Number.isFinite))result.push(['direction',values.join(',')]);}
+ for(const [name,tag] of [['respiratory','x00189245'],['cardiac','x00189241']])if(ds.elements[tag]){const value=ds.double(tag);if(Number.isFinite(value))result.push([name,String(value)]);}
+ const stack=ds.string('x00209056')?.trim();if(stack)result.push(['stack',stack]);
+ return result;
+}

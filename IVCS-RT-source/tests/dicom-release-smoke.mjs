@@ -1,11 +1,12 @@
 import {promises as fs} from 'node:fs';import path from 'node:path';import {spawn} from 'node:child_process';import {createRequire} from 'node:module';import assert from 'node:assert/strict';
-const root=path.resolve('build/20260915 smoke');await fs.cp('releases/'+(process.argv[2] || '20260915')+'/IVCS-RT-20260915-Windows-x64',root,{recursive:true});
+const revision=process.argv[3] || '20260915';const root=path.resolve('build/'+path.basename(process.argv[2] || revision)+' portable smoke');await fs.cp('releases/'+(process.argv[2] || '20260915')+'/IVCS-RT-'+revision+'-Windows-x64',root,{recursive:true});
 const child=spawn(path.join(root,'runtime/node.exe'),[path.join(root,'server.cjs')],{cwd:root,env:{...process.env,PORT:'33318'},stdio:'ignore',windowsHide:true});
 const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE || 'playwright');let browser;
 try{
  for(let i=0;i<50;i++){try{if((await fetch('http://127.0.0.1:33318/api/library')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
- browser=await chromium.launch({headless:true,channel:'msedge'});const page=await browser.newPage();await page.goto('http://127.0.0.1:33318');await page.getByRole('button',{name:'File and help'}).click();await page.locator('#btn-show-help').click();await page.locator('#btn-show-about').click();assert.match(await page.locator('#about-ivcs-rt').innerText(),/20260915/);
+ browser=await chromium.launch({headless:true,channel:'msedge'});const page=await browser.newPage();await page.goto('http://127.0.0.1:33318');await page.getByRole('button',{name:'File and help'}).click();await page.locator('#btn-show-help').click();await page.locator('#btn-show-about').click();assert.match(await page.locator('#about-ivcs-rt').innerText(),new RegExp(revision));
  const index=await (await fetch('http://127.0.0.1:33318/api/library')).json();assert.equal(index.patients.length,1);assert.equal(index.patients[0].id,'SYNTHETIC-LB-20260909');
- console.log('PASS compiled Windows 20260915 starts locally, serves About and synthetic library');
- const file='releases/'+(process.argv[2] || '20260915')+'/IVCS-RT-20260915-Windows-x64/release.json',metadata=JSON.parse(await fs.readFile(file,'utf8'));metadata.nativeExecutionTested=true;await fs.writeFile(file,JSON.stringify(metadata,null,2));
+ const response=await fetch('http://127.0.0.1:33318/api/library/study/'+index.patients[0].studies[0].key,{headers:{Accept:'application/x-ndjson'}});assert.ok(response.headers.get('content-type').includes('application/x-ndjson'));const records=(await response.text()).trim().split('\n').map(line=>JSON.parse(line));assert.equal(records[0].format,'ivcs-study-stream');assert.equal(records.at(-1).kind,'end');assert.equal(records.filter(r=>r.kind==='slice' && r.depth===0).length,index.patients[0].studies[0].slices);console.log('PASS bundled server streams study images without duplicated JSON');
+ console.log('PASS compiled Windows '+revision+' starts locally, serves About and synthetic library');
+ const file='releases/'+(process.argv[2] || '20260915')+'/IVCS-RT-'+revision+'-Windows-x64/release.json',metadata=JSON.parse(await fs.readFile(file,'utf8'));metadata.nativeExecutionTested=true;await fs.writeFile(file,JSON.stringify(metadata,null,2));
 }finally{await browser?.close();child.kill();}

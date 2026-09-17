@@ -1,4 +1,6 @@
 import JSZip from 'jszip';
+import {checkedOriginals} from './dicomBundle';
+import {derivedDicomImages} from './derivedDicom';
 import {tr} from '../i18n';
 import {readExportStudy,libraryIndex,LibraryPatient} from './libraryClient';
 import {compute} from './computeClient';
@@ -26,7 +28,7 @@ export async function downloadBulk(prepared:Awaited<ReturnType<typeof prepareBul
   const index=await libraryIndex();
   for(const c of prepared.cases)if(!index.patients.some(p=>p.studies.some(s=>s.key===c.key && s.state===c.revision)))throw new Error('Una serie cambió después de comprobarla. Actualice y repita la comprobación.');
   const zip=new JSZip();
-  for(const c of prepared.cases){progress('Empaquetando estudios comprobados…');zip.file(c.directory+'RTSTRUCT.dcm',await c.blob.arrayBuffer());if(prepared.includeOriginals){const response=await fetch('/api/library/originals/'+encodeURIComponent(c.key));if(!response.ok)throw new Error('No se pudieron recuperar los originales. Repita la comprobación.');const originals=await JSZip.loadAsync(await response.arrayBuffer());for(const entry of Object.values(originals.files))if(!entry.dir)zip.file(c.directory+'DICOM/'+entry.name,await entry.async('uint8array'));}}
+  for(const c of prepared.cases){progress('Empaquetando estudios comprobados…');zip.file(c.directory+'RTSTRUCT.dcm',await c.blob.arrayBuffer());if(prepared.includeOriginals){const response=await fetch('/api/library/originals/'+encodeURIComponent(c.key));if(!response.ok)throw new Error('No se pudieron recuperar los originales. Repita la comprobación.');const {selected}=await readExportStudy(c.key);const originals=await checkedOriginals(selected.sourceVolume || selected,await response.arrayBuffer());for(let i=0;i<originals.length;i++)zip.file(c.directory+'DICOM/SOURCE_'+String(i+1).padStart(5,'0')+'.dcm',originals[i]);if(selected.sourceVolume){const derived=await derivedDicomImages(selected,originals);for(let i=0;i<derived.length;i++)zip.file(c.directory+'DICOM/AXIAL_'+String(i+1).padStart(5,'0')+'.dcm',derived[i]);}}}
   const report=prepared.report.map(r=>({...r,status:r.status==='preparado'?'exportado':r.status}));
   zip.file('informe.json',JSON.stringify({options:prepared.options,studies:report},null,2));
   zip.file('LEEME.txt','RTSTRUCT por serie de referencia para importación DICOM en TPS. No incluye planes, dosis ni objetos de registro espacial. Revise informe.json y valide imágenes, huecos, islas y estructuras pequeñas en su versión del TPS.');

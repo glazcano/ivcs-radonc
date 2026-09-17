@@ -118,3 +118,12 @@ test('legacy paths migrate atomically without changing IDs, masks or trash recov
  // A new process can reopen the already migrated library.
  assert.equal((await createLibrary(root).open(key)).selected.slices[0].huData[3],3);
 }));
+
+test('linked registration group updates commit atomically and preserve detach choices',()=>withLibrary(async library=>{
+ const a=await library.putStudy(study('001','1.1')),b=await library.putStudy(study('001','1.2')),c=await library.putStudy(study('001','1.3'));
+ const t={model:'rigid3d',center:[0,0,0],translationX:5,translationY:0,translationZ:0,rotationX:0,rotationY:0,rotationDeg:0,scaleX:1,scaleY:1,locked:false};
+ await library.group({referenceKey:a.key,entries:[{secondaryKey:b.key,transform:t},{secondaryKey:c.key,transform:t}],detachedSeriesIds:['1.2']});
+ const before=(await library.list()).patients[0].groups[0];assert.equal(before.members.length,3);assert.deepEqual(before.detachedSeriesIds,['1.2']);
+ await assert.rejects(()=>library.group({referenceKey:a.key,entries:[{secondaryKey:b.key,transform:{...t,translationX:99}},{secondaryKey:'missing',transform:t}]}));
+ assert.deepEqual((await library.list()).patients[0].groups[0],before);
+}));

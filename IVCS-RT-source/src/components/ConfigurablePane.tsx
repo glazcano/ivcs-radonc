@@ -1,3 +1,4 @@
+import {secondaryDisplay} from '../utils/fusionDisplay';
 import {MprOrthogonalView} from './MprOrthogonalView';
 import React,{lazy,Suspense,useEffect,useRef,useState} from 'react';
 import type {DicomSeries,ImageStudy,MprCoordinates,StructureRoi,RegistrationState} from '../types';
@@ -22,7 +23,7 @@ function PaneImage({series,coordinates,rois,registration,windowCenter,windowWidt
  const canvas=useRef<HTMLCanvasElement>(null),host=useRef<HTMLDivElement>(null),[zoom,setZoom]=useState(1),[pan,setPan]=useState({x:0,y:0}),drag=useRef<{x:number;y:number;px:number;py:number}|null>(null);
  useEffect(()=>{const el=host.current;if(!el)return;const stop=(e:WheelEvent)=>e.preventDefault();el.addEventListener('wheel',stop,{passive:false});return()=>el.removeEventListener('wheel',stop);},[]);
  useEffect(()=>{const c=canvas.current;if(!c || !series)return;const slice=referencePlane(series,coordinates,plane),base=renderSliceToCanvas(slice,windowCenter,windowWidth,'grayscale'),mode=config.mode;
- let overlay:HTMLCanvasElement|undefined;if(secondary && mode!=='reference'){const t=registration?.transforms[secondary.id];overlay=renderSliceToCanvas(resamplePlane(slice,secondary,t?.model==='rigid3d'?t:identity3d(volumeCenter(secondary))),registration?.secondaryWindowCenter ?? windowCenter,registration?.secondaryWindowWidth ?? windowWidth,registration?.secondaryColorMap || 'grayscale');}
+ let overlay:HTMLCanvasElement|undefined;if(secondary && mode!=='reference'){const t=registration?.transforms[secondary.id];overlay=renderSliceToCanvas(resamplePlane(slice,secondary,t?.model==='rigid3d'?t:identity3d(volumeCenter(secondary))),(secondary.id===registration?.secondaryStudyId?registration.secondaryWindowCenter:secondaryDisplay(secondary).secondaryWindowCenter),(secondary.id===registration?.secondaryStudyId?registration.secondaryWindowWidth:secondaryDisplay(secondary).secondaryWindowWidth),registration?.secondaryColorMap || 'grayscale');}
  c.width=base.width*(mode==='compare'?2:1);c.height=Math.max(1,Math.round(base.height*slice.pixelSpacing[0]/slice.pixelSpacing[1]));const ctx=c.getContext('2d')!;ctx.scale(1,c.height/base.height);ctx.drawImage(base,0,0);
  if(overlay){ctx.save();if(mode==='compare')ctx.drawImage(overlay,base.width,0);else if(mode==='secondary'){ctx.clearRect(0,0,base.width,base.height);ctx.drawImage(overlay,0,0);}else{
  if(mode==='blend')ctx.globalAlpha=registration?.fusionOpacity ?? .5;

@@ -441,8 +441,8 @@ export const MprOrthogonalView: React.FC<MprOrthogonalViewProps> = ({
           <span className="text-[#777]">•</span>
           <span className="hidden xl:inline text-[#AAA] font-mono text-[11px]">
             {plane === 'coronal' 
-              ? tr("Y: {0}/{1} ({2} mm)", [coordinates.y + 1,rows,physicalCoords.yMm])
-              : tr("X: {0}/{1} ({2} mm)", [coordinates.x + 1,cols,physicalCoords.xMm])}
+              ? tr("Y: {0}/{1} ({2} mm)", [coordinates.y + 1,rows,physicalCoords.yMm.toFixed(2)])
+              : tr("X: {0}/{1} ({2} mm)", [coordinates.x + 1,cols,physicalCoords.xMm.toFixed(2)])}
           </span>
         </div>
 

@@ -10,7 +10,7 @@ export function createEmptyMask(rows: number, cols: number): Uint8Array {
   return new Uint8Array(rows * cols);
 }
 
-export function connectedThreshold(data:Int16Array,rows:number,cols:number,seed:number,min:number,max:number):Uint8Array{
+export function connectedThreshold(data:Int16Array | Float32Array,rows:number,cols:number,seed:number,min:number,max:number):Uint8Array{
   const mask=new Uint8Array(rows*cols);if(seed<0 || seed>=mask.length || data[seed]<min || data[seed]>max)return mask;
   const queue=new Int32Array(mask.length);let head=0,tail=0;queue[tail++]=seed;mask[seed]=1;
   while(head<tail){const p=queue[head++],x=p%cols,y=Math.floor(p/cols);for(const n of [x>0?p-1:-1,x+1<cols?p+1:-1,y>0?p-cols:-1,y+1<rows?p+cols:-1])if(n>=0 && !mask[n] && data[n]>=min && data[n]<=max){mask[n]=1;queue[tail++]=n;}}
@@ -47,7 +47,7 @@ export function stampBrushCircle(
   cy: number,
   radiusPx: number,
   value: 0 | 1,
-  huData?: Int16Array,
+  huData?: Int16Array | Float32Array,
   huThreshold?: { min: number; max: number },
   aspectY: number = 1
 ) {
@@ -104,7 +104,7 @@ export function strokeBrushLine(
   y1: number,
   radiusPx: number,
   value: 0 | 1,
-  huData?: Int16Array,
+  huData?: Int16Array | Float32Array,
   huThreshold?: { min: number; max: number },
   aspectY: number = 1
 ) {
@@ -131,7 +131,7 @@ export function strokePathOnMask(
   points: Array<[number, number]>,
   radiusPx: number = 1,
   value: 0 | 1 = 1,
-  huData?: Int16Array,
+  huData?: Int16Array | Float32Array,
   huThreshold?: { min: number; max: number },
   aspectY: number = 1
 ) {
@@ -1429,7 +1429,7 @@ export function calculateRoiHuStats(
  * Automatically creates a threshold mask for CT range (e.g. Bone > 200 HU)
  */
 export function createThresholdMask(
-  huData: Int16Array,
+  huData: Int16Array | Float32Array,
   rows: number,
   cols: number,
   minHU: number,

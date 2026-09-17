@@ -100,7 +100,7 @@ export function renderSliceToCanvas(
       let norm = (huData[i] - minVal) * invWidth;
       if (norm < 0) norm = 0;
       else if (norm > 1) norm = 1;
-      const gray = (norm * 255) | 0;
+      const gray = ((slice.inverted?1-norm:norm) * 255) | 0;
       data32[i] = (255 << 24) | (gray << 16) | (gray << 8) | gray;
     }
   } else {

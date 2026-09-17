@@ -1,3 +1,4 @@
+import {drawFusion} from '../utils/fusionDisplay';
 import {ConfigurablePane,defaultPanes,PaneConfig} from './ConfigurablePane';
 import {tr} from '../i18n';
 import {connectedThreshold} from '../utils/contourEngine';
@@ -615,9 +616,11 @@ export const Viewport: React.FC<ViewportProps> = ({
     for (let i = 0; i < len; i++) {
       const hu = huData[i];
       const lutIdx = hu + OFFSET;
-      const gray = (lutIdx >= 0 && lutIdx < 8192)
+      let gray = (Number.isInteger(lutIdx) && lutIdx >= 0 && lutIdx < 8192)
         ? lut[lutIdx]
-        : (hu < wc ? 0 : 255);
+        : Math.max(0,Math.min(255,Math.round((hu-wc)/Math.max(1e-12,ww)*255+127.5)));
+      if(slice.inverted)gray=255-gray;
+      if(slice.valid && !slice.valid[i])gray=0;
       data32[i] = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
     }
 
@@ -800,54 +803,7 @@ export const Viewport: React.FC<ViewportProps> = ({
           putBounded(secondaryOffscreenMap.current,fusionKey,secCanvas,16*1024*1024,bitmapBytes);
         }
         if (secCanvas) {
-          const drawTransformedSecondary = () => {ctx.drawImage(secCanvas!,0,0);};
-          const mode = registrationState.fusionMode;
-          if (mode === 'blend') {
-            ctx.save();
-            ctx.globalAlpha = registrationState.fusionOpacity;
-            drawTransformedSecondary();
-            ctx.restore();
-          } else if (mode === 'checkerboard') {
-            const sz = registrationState.checkerboardSize || 32;
-            ctx.save();
-            ctx.beginPath();
-            for (let y = 0; y < rows; y += sz) {
-              const rowEven = Math.floor(y / sz) % 2 === 0;
-              for (let x = 0; x < cols; x += sz) {
-                const colEven = Math.floor(x / sz) % 2 === 0;
-                if (rowEven === colEven) {
-                  ctx.rect(x, y, Math.min(sz, cols - x), Math.min(sz, rows - y));
-                }
-              }
-            }
-            ctx.clip();
-            drawTransformedSecondary();
-            ctx.restore();
-          } else if (mode === 'split_horizontal') {
-            const splitX = cols * (registrationState.splitPosition || 0.5);
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(splitX, 0, cols - splitX, rows);
-            ctx.clip();
-            drawTransformedSecondary();
-            ctx.restore();
-
-            // Draw clean vertical split divider line
-            ctx.save();
-            ctx.strokeStyle = '#3B82F6';
-            ctx.lineWidth = 1.5 / zoom;
-            ctx.setLineDash([4 / zoom, 2 / zoom]);
-            ctx.beginPath();
-            ctx.moveTo(splitX, 0);
-            ctx.lineTo(splitX, rows);
-            ctx.stroke();
-            ctx.restore();
-          } else if (mode === 'difference') {
-            ctx.save();
-            ctx.globalCompositeOperation = 'difference';
-            drawTransformedSecondary();
-            ctx.restore();
-          }
+          drawFusion(ctx,secCanvas,registrationState);
         }
       }
     }
@@ -1365,7 +1321,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         if (!el) return;
         const info = pendingCursorInfoRef.current;
         if (info && info.hu !== null) {
-          el.textContent = tr('Coordenadas: {0}, {1} · HU: {2}',[info.x,info.y,info.hu]);
+          el.textContent = tr('Coordenadas: {0}, {1} · {2}: {3}',[info.x,info.y,currentSlice?.units || tr('Valor'),Number(info.hu).toLocaleString(undefined,{maximumFractionDigits:6})]);
         } else {
           el.innerHTML = `<div class="text-[#777]"></div>`;
         }

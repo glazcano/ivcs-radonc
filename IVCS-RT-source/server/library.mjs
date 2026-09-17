@@ -1,5 +1,6 @@
 import {readDicomDataset,acquisitionToken} from '../src/utils/dicomDataset.mjs';
 import {readTranslations} from './translations.mjs';
+import {sendStudyStream} from './studyStream.mjs';
 import express from 'express';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -76,7 +77,7 @@ export function createLibrary(root) {
       index.trash ||= [];
       index.trash.push({id:randomUUID(),deletedAt:new Date().toISOString(),patient:{...patient,studies:removed}});
       patient.studies=patient.studies.filter(s=>!keys.has(s.key));
-      patient.groups=patient.groups.filter(g=>!keys.has(g.referenceKey)).map(g=>({...g,members:g.members.filter(k=>!keys.has(k)),transforms:Object.fromEntries(Object.entries(g.transforms).filter(([k])=>!keys.has(k)))})).filter(g=>g.members.length>1);
+      patient.groups=patient.groups.filter(g=>!keys.has(g.referenceKey)).map(g=>({...g,members:g.members.filter(k=>!keys.has(k)),detachedSeriesIds:g.detachedSeriesIds?.filter(id=>patient.studies.some(s=>s.id===id)),relationPolicies:g.relationPolicies?Object.fromEntries(Object.entries(g.relationPolicies).filter(([id])=>patient.studies.some(s=>s.id===id))):undefined,transforms:Object.fromEntries(Object.entries(g.transforms).filter(([k])=>!keys.has(k)))})).filter(g=>g.members.length>1);
       index.patients=index.patients.filter(p=>p.studies.length);
       if(keys.has(index.latest))index.latest=null;
       await commit(index);return {removed:removed.length};
@@ -104,11 +105,11 @@ export function createLibrary(root) {
       // Re-import is idempotent and must never replace existing contours.
       if(existing) {
         const original=JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,existing),'images.json.gz'))));
-        const signature=s=>JSON.stringify(s.slices.map(x=>[x.sopInstanceUID,x.rows,x.cols,x.imagePositionPatient,x.huData]));
+        const signature=s=>{const images=v=>v?.slices.map(x=>[x.sopInstanceUID,x.rows,x.cols,x.imagePositionPatient,x.huData]);return JSON.stringify([images(s),s.sourceVolume?[s.sourceVolume.seriesInstanceUID,s.sourceVolume.frameOfReferenceUID,images(s.sourceVolume)]:null]);};
         if(signature(original)!==signature(study))throw new Error('La serie ya existe con imágenes diferentes; no se reemplazó.');
         return {key};
       }
-      const entry={key,id:study.id,acquisitionKey:study.acquisitionKey,seriesInstanceUID:study.seriesInstanceUID,studyInstanceUID:study.studyInstanceUID,description:study.seriesDescription || '',studyDescription:study.studyDescription || '',modality:study.modality,date:study.studyDate || study.date || '',slices:study.slices.length,state:null,originals:0};
+      const entry={key,id:study.id,acquisitionDimensions:study.acquisitionDimensions,frameOfReferenceUID:study.frameOfReferenceUID,sourceSeriesUID:study.sourceVolume?.seriesInstanceUID,acquisitionKey:study.acquisitionKey,seriesInstanceUID:study.seriesInstanceUID,studyInstanceUID:study.studyInstanceUID,description:study.seriesDescription || '',studyDescription:study.studyDescription || '',modality:study.modality,date:study.studyDate || study.date || '',slices:study.slices.length,state:null,originals:0};
       await atomic(path.join(folder(patient,entry),'images.json.gz'),gzipSync(bytes));
       patient.studies.push(entry);patient.name=study.patientName || patient.name;
       await commit(index);return {key};
@@ -156,12 +157,14 @@ export function createLibrary(root) {
       const assets=async entry=>JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,entry),'images.json.gz'))));
       const state=await readState(patient,study);
       const selected=await assets(study);
-      // All series of this patient are available to the registration assistant.
-      const studies=selectedOnly?[selected]:await Promise.all(patient.studies.map(s=>s.key===key?Promise.resolve(selected):assets(s)));
+      // Other phases and secondary images are loaded on demand from the library.
+      const studies=[selected];
       if(state?.registrationState){
         const r=state.registrationState,ids=new Set(patient.studies.map(s=>s.id));
         if(!ids.has(r.secondaryStudyId)){r.secondaryStudyId=selected.id;r.active=false;}
         r.transforms=Object.fromEntries(Object.entries(r.transforms || {}).filter(([id])=>ids.has(id)));
+        if(r.detachedSeriesIds)r.detachedSeriesIds=r.detachedSeriesIds.filter(id=>ids.has(id));
+        if(r.relationPolicies)r.relationPolicies=Object.fromEntries(Object.entries(r.relationPolicies).filter(([id])=>ids.has(id)));
       }
       return {selected,studies,state,revision:study.state};
     },
@@ -174,15 +177,21 @@ export function createLibrary(root) {
     },
     group:payload=>mutate(async()=> {
       const index=await read(), {patient,study}=locate(index,payload.referenceKey);
-      const secondary=patient.studies.find(s=>s.key===payload.secondaryKey);
-      if(!secondary || secondary.key===study.key)throw new Error('Seleccione dos series del mismo paciente.');
-      const transform=payload.transform;
-      if(transform?.model==='rigid3d' && (transform.scaleX!==1 || transform.scaleY!==1 || transform.center?.length!==3 || ![transform.rotationX,transform.rotationY,...(transform.center || [])].every(Number.isFinite)))throw new Error('Transformación rígida 3D inválida.');
-      if(!transform || !['translationX','translationY','translationZ','rotationDeg','scaleX','scaleY'].every(k=>Number.isFinite(transform[k])) || transform.scaleX<=0 || transform.scaleY<=0)throw new Error('Transformación inválida.');
+      const entries=payload.entries || [{secondaryKey:payload.secondaryKey,transform:payload.transform}];
+      if(!Array.isArray(entries) || !entries.length)throw new Error('Grupo de corregistro vacío.');
+      for(const entry of entries){
+        const secondary=patient.studies.find(s=>s.key===entry.secondaryKey);
+        if(!secondary || secondary.key===study.key)throw new Error('Seleccione dos series del mismo paciente.');
+        const transform=entry.transform;
+        if(transform?.model==='rigid3d' && (transform.scaleX!==1 || transform.scaleY!==1 || transform.center?.length!==3 || ![transform.rotationX,transform.rotationY,...(transform.center || [])].every(Number.isFinite)))throw new Error('Transformación rígida 3D inválida.');
+        if(!transform || !['translationX','translationY','translationZ','rotationDeg','scaleX','scaleY'].every(k=>Number.isFinite(transform[k])) || transform.scaleX<=0 || transform.scaleY<=0)throw new Error('Transformación inválida.');
+      }
       let group=patient.groups.find(g=>g.referenceKey===study.key);
       if(!group) {group={id:randomUUID(),referenceKey:study.key,label:`Grupo ${patient.groups.length+1}`,color:`hsl(${Math.round(patient.groups.length*137.508)%360} 75% 65%)`,members:[study.key],transforms:{}};patient.groups.push(group);}
-      if(!group.members.includes(secondary.key))group.members.push(secondary.key);
-      group.transforms[secondary.key]=transform;await commit(index);return group;
+      for(const entry of entries){if(!group.members.includes(entry.secondaryKey))group.members.push(entry.secondaryKey);group.transforms[entry.secondaryKey]=entry.transform;}
+      if(payload.detachedSeriesIds){if(!Array.isArray(payload.detachedSeriesIds) || payload.detachedSeriesIds.some(id=>!patient.studies.some(s=>s.id===id)))throw new Error('Vínculos de series inválidos.');group.detachedSeriesIds=payload.detachedSeriesIds;}
+      if(payload.relationPolicies){if(typeof payload.relationPolicies!=='object' || Object.entries(payload.relationPolicies).some(([id,policy])=>!patient.studies.some(s=>s.id===id) || !['preserve','dicom','saved','single'].includes(policy)))throw new Error('Vínculos de series inválidos.');group.relationPolicies=payload.relationPolicies;}
+      await commit(index);return group;
     }),
     originals:(patientId,bytes,name)=>mutate(async()=> {
       const index=await read(),patient=index.patients.find(p=>p.id===patientId);
@@ -197,7 +206,8 @@ export function createLibrary(root) {
         let ds;try{ds=readDicomDataset(new Uint8Array(file.bytes),{untilTag:'x7fe00010'});}catch{continue;}
         const el=ds.elements.x00100020, charset=ds.string('x00080005')?.trim();const dicomId=el?new TextDecoder(charset==='ISO_IR 192'?'utf-8':'iso-8859-1').decode(ds.byteArray.subarray(el.dataOffset,el.dataOffset+el.length)).replace(/[\0 ]+$/g,''):'';
         if(dicomId!==patientId)throw new Error('DICOM de un paciente distinto.');
-        const candidates=patient.studies.filter(s=>s.seriesInstanceUID===ds.string('x0020000e'));
+        const candidates=patient.studies.filter(s=>(s.sourceSeriesUID || s.seriesInstanceUID)===ds.string('x0020000e'));
+        if((ds.intString('x00280008') || 1)>1 || ds.elements.x52009230){if(!candidates.length)throw new Error('Serie DICOM no importada en la biblioteca.');for(const study of candidates)planned.push({study,file});continue;}
         const study=candidates.find(s=>s.acquisitionKey===acquisitionToken(ds)) || candidates.find(s=>!s.acquisitionKey);
         if(!study)throw new Error('Serie DICOM no importada en la biblioteca.');
         planned.push({study,file});
@@ -227,8 +237,9 @@ export function libraryRouter(root) {
   router.get('/',run(()=>library.list()));
   router.get('/translations',run(()=>readTranslations()));
   router.get('/settings',run(()=>library.settings()));
-  router.get('/study/:key',run(req=>library.open(req.params.key,true)));
-  router.get('/export/:key',run(req=>library.open(req.params.key,true)));
+  const studyResponse=async(req,res)=>{try{const study=await library.open(req.params.key,true);if(req.headers.accept?.includes('application/x-ndjson'))await sendStudyStream(res,study);else res.json(study);}catch(e){if(res.headersSent)res.destroy();else res.status(e.status || 400).json({error:e.message});}};
+  router.get('/study/:key',studyResponse);
+  router.get('/export/:key',studyResponse);
   router.get('/originals/:key',async(req,res)=>{try{res.type('application/zip').send(await library.exportOriginals(req.params.key));}catch(e){res.status(400).json({error:e.message});}});
   router.put('/originals',express.raw({type:'application/octet-stream',limit:'1gb'}),run(req=>library.originals(String(req.query.patientId),req.body,String(req.query.name))));
   router.use(express.json({limit:'1gb'}));

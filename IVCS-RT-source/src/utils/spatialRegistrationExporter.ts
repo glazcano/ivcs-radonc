@@ -14,12 +14,12 @@ export function rigidDicomMatrix(t:RegistrationTransform):number[]{
 }
 export function validateDicomIdentity(s:DicomSeries){
  const valid=(u?:string)=>!!u && u.length<=64 && /^(0|[1-9]\d*)(\.(0|[1-9]\d*))+$/u.test(u);
- if(!s.patientId || ![s.studyInstanceUID,s.seriesInstanceUID,s.frameOfReferenceUID,...s.slices.flatMap(v=>[v.sopInstanceUID,v.sopClassUID])].every(valid) || !s.slices.length || new Set(s.slices.map(v=>v.sopInstanceUID)).size!==s.slices.length)throw new Error('Faltan identificadores DICOM válidos o hay imágenes duplicadas.');
+ if(!s.patientId || ![s.studyInstanceUID,s.seriesInstanceUID,s.frameOfReferenceUID,...s.slices.flatMap(v=>[v.sopInstanceUID,v.sopClassUID])].every(valid) || !s.slices.length || new Set(s.slices.map(v=>v.sopInstanceUID+':'+(v.frameNumber || ''))).size!==s.slices.length)throw new Error('Faltan identificadores DICOM válidos o hay imágenes duplicadas.');
 }
 export function exportSpatialRegistration(reference:DicomSeries,moving:DicomSeries,t:RegistrationTransform){
  validateDicomIdentity(reference);validateDicomIdentity(moving);if(reference.patientId!==moving.patientId)throw new Error('Las series pertenecen a pacientes distintos.');
  const matrix=rigidDicomMatrix(t),sop=uid(),seriesUID=uid(),now=new Date(),date=now.toISOString().slice(0,10).replace(/-/g,''),time=now.toISOString().slice(11,19).replace(/:/g,'');
- const refs=(s:DicomSeries)=>s.slices.map(v=>item(b=>{b.writeStringElement(8,0x1150,'UI',v.sopClassUID!);b.writeStringElement(8,0x1155,'UI',v.sopInstanceUID!);}));
+ const refs=(s:DicomSeries)=>s.slices.map(v=>item(b=>{b.writeStringElement(8,0x1150,'UI',v.sopClassUID!);b.writeStringElement(8,0x1155,'UI',v.sopInstanceUID!);if(v.frameNumber)b.writeStringElement(8,0x1160,'IS',String(v.frameNumber));}));
  const seriesRefs=(s:DicomSeries)=>item(b=>{b.writeSequence(8,0x114a,refs(s));b.writeStringElement(0x20,0xe,'UI',s.seriesInstanceUID!);});
  const registration=(s:DicomSeries,m:number[])=>item(b=>{
   b.writeSequence(8,0x1140,refs(s));b.writeStringElement(0x20,0x52,'UI',s.frameOfReferenceUID!);

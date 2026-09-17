@@ -68,3 +68,29 @@ test('automatic rotation on a synthetic volumetric phantom improves physical ali
  const points:any=[[15,26,36],[34,45,48],[19,44,42]];const error=points.reduce((sum,p)=>sum+Math.hypot(...transformPoint(p,fit.transform).map((v,i)=>v-transformPoint(p,expected)[i])),0)/points.length;
  assert.ok(error<1.5,JSON.stringify({error,fit}));
 });
+
+
+test('automatic CT/MR registration accepts a small MR FoV and preserves known alignment',()=>{
+ const fixed=fixture(64,[1,1]);
+ for(let z=0;z<9;z++)for(let y=0;y<64;y++)for(let x=0;x<64;x++)fixed.slices[z].huData[y*64+x]=((x*13+y*7+z*17)%97)*3;
+ for(const s of fixed.slices){s.minHU=0;s.maxHU=288;}
+ const moving={...fixed,modality:'MR',slices:fixed.slices.map(s=>({...s,rows:16,cols:16,imagePositionPatient:[30,40,s.imagePositionPatient[2]] as [number,number,number],minHU:50,maxHU:626,huData:Int16Array.from({length:256},(_,i)=>50+2*s.huData[(20+Math.floor(i/16))*64+20+i%16])}))};
+ const result=automaticRigid3d(fixed,moving,identity3d([37.5,47.5,42]));
+ assert.ok(Number.isFinite(result.score));
+ assert.ok(Math.hypot(result.transform.translationX,result.transform.translationY,result.transform.translationZ)<1,JSON.stringify(result));
+});
+
+test('fusion planes inherit secondary polarity rather than CT polarity',()=>{
+ const fixed=fixture(8),moving={...fixed,slices:fixed.slices.map(s=>({...s,inverted:true,windowCenter:150,windowWidth:300}))};
+ const plane=resamplePlane(fixed.slices[4],moving,identity3d());
+ assert.equal(plane.inverted,true);assert.equal(plane.windowCenter,150);assert.equal(plane.windowWidth,300);
+});
+
+
+test('orthogonal views rebuild support masks on their own dimensions',async()=>{
+ const {referencePlane}=await import('../src/utils/panelPlane');
+ const s=fixture(8);for(const slice of s.slices)(slice as any).valid=Uint8Array.from({length:64},(_,i)=>i%8<4?1:0);
+ const coronal=referencePlane(s,{x:2,y:2,z:4},'coronal');assert.equal(coronal.valid!.length,72);
+ for(let y=0;y<9;y++)for(let x=0;x<8;x++)assert.equal(coronal.valid![y*8+x],x<4?1:0);
+ const sagittal=referencePlane(s,{x:6,y:2,z:4},'sagittal');assert.equal(sagittal.valid!.reduce((a,b)=>a+b,0),0);
+});

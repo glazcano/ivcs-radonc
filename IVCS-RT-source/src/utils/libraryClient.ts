@@ -1,9 +1,10 @@
 import {identity3d,volumeCenter} from './rigid3d';
+import {readStudyStream} from './studyStream';
 import type { Session } from './session';
 import type { ImageStudy, RegistrationState } from '../types';
 
-export interface LibraryStudy { key:string; id:string; description:string; studyDescription:string; modality:string; date:string; slices:number; originals:number; state:string|null; }
-export interface LibraryGroup {id:string;label:string;color:string;referenceKey:string;members:string[];transforms:Record<string,any>;}
+export interface LibraryStudy { acquisitionDimensions?:Record<string,string>;frameOfReferenceUID?:string;sourceSeriesUID?:string;seriesInstanceUID?:string;studyInstanceUID?:string;key:string; id:string; description:string; studyDescription:string; modality:string; date:string; slices:number; originals:number; state:string|null; }
+export interface LibraryGroup {relationPolicies?:RegistrationState['relationPolicies'];detachedSeriesIds?:string[];id:string;label:string;color:string;referenceKey:string;members:string[];transforms:Record<string,any>;}
 export interface LibraryPatient {key:string;id:string;name:string;studies:LibraryStudy[];groups:LibraryGroup[];}
 export interface LibraryIndex {version:number;patients:LibraryPatient[];latest:string|null;folder:string;exists?:boolean;trash?:{id:string;deletedAt:string;patient:LibraryPatient}[];}
 const known=new WeakMap<object,string>();
@@ -12,25 +13,29 @@ const baselines=new WeakMap<object,Session['rois']>();
 
 export function encodeLibrary(value:unknown):string {
   return JSON.stringify(value,(_key,v)=> {
-    if(v instanceof Int16Array || v instanceof Uint8Array) {
+    if(v instanceof Int16Array || v instanceof Float32Array || v instanceof Uint8Array) {
       const bytes=new Uint8Array(v.buffer,v.byteOffset,v.byteLength);let binary='';
       for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
-      return {array:v instanceof Int16Array?'i16':'u8',base64:btoa(binary)};
+      return {array:v instanceof Int16Array?'i16':v instanceof Float32Array?'f32':'u8',base64:btoa(binary)};
     }
     return v;
   });
 }
 export function decodeLibrary(text:string):any {
   return JSON.parse(text,(_key,v)=> {
-    if(v && (v.array==='i16' || v.array==='u8') && typeof v.base64==='string') {
-      const bytes=Uint8Array.from(atob(v.base64),c=>c.charCodeAt(0));
-      return v.array==='i16'?new Int16Array(bytes.buffer):bytes;
+    if(v && (v.array==='i16' || v.array==='f32' || v.array==='u8') && typeof v.base64==='string') {
+      const native=(Uint8Array as any).fromBase64;
+      let bytes:Uint8Array;
+      if(typeof native==='function')bytes=native.call(Uint8Array,v.base64);
+      else {const binary=atob(v.base64);bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);}
+      return v.array==='i16'?new Int16Array(bytes.buffer):v.array==='f32'?new Float32Array(bytes.buffer):bytes;
     }
     return v;
   });
 }
 async function request(url:string,method='GET',body?:unknown):Promise<any> {
-  const response=await fetch('/api/library'+url,{method,headers:{'Content-Type':'application/json','X-RadContour':'local'},body:body===undefined?undefined:encodeLibrary(body)});
+  const response=await fetch('/api/library'+url,{method,headers:{'Content-Type':'application/json','X-RadContour':'local',...(/^\/(study|export)\//.test(url)?{'Accept':'application/x-ndjson'}:{})},body:body===undefined?undefined:encodeLibrary(body)});
+  if(response.ok && response.headers.get('content-type')?.includes('application/x-ndjson'))return readStudyStream(response,decodeLibrary);
   const content=await response.text();
   if(!response.ok) {let error='No se pudo acceder a la biblioteca local.';try{error=JSON.parse(content).error || error;}catch{}throw new Error(error);}
   return decodeLibrary(content);
@@ -47,7 +52,7 @@ export async function registerStudy(study:ImageStudy):Promise<string> {
   const result=await request('/study','POST',study);known.set(study,result.key);return result.key;
 }
 export function defaultRegistration(reference:string,secondary=reference):RegistrationState {
-  return {active:false,referenceStudyId:reference,secondaryStudyId:secondary,transforms:{},fusionMode:'blend',fusionOpacity:0.5,checkerboardSize:32,splitPosition:0.5,secondaryColorMap:'hot_iron',secondaryWindowCenter:120,secondaryWindowWidth:240,voi:{enabled:false,minX:0,maxX:1,minY:0,maxY:1,minSlice:0,maxSlice:0},showVoiOverlay:false};
+  return {active:false,referenceStudyId:reference,secondaryStudyId:secondary,transforms:{},fusionMode:'blend',fusionOpacity:0.5,checkerboardSize:32,splitPosition:0.5,secondaryColorMap:'grayscale',secondaryWindowCenter:120,secondaryWindowWidth:240,voi:{enabled:false,minX:0,maxX:1,minY:0,maxY:1,minSlice:0,maxSlice:0},showVoiOverlay:false};
 }
 export async function openLibraryStudy(key:string):Promise<Session> {
   const {selected,studies,state,revision}=await request('/study/'+encodeURIComponent(key));
@@ -88,7 +93,11 @@ export async function saveRegistrationGroup(session:Session):Promise<void> {
   const r=session.registrationState;
   const ref=session.studies.find(s=>s.id===r.referenceStudyId),sec=session.studies.find(s=>s.id===r.secondaryStudyId);
   if(!ref || !sec || ref===sec)throw new Error('Seleccione una imagen secundaria para guardar el corregistro.');
-  await request('/group','POST',{referenceKey:await registerStudy(ref),secondaryKey:await registerStudy(sec),transform:r.transforms[sec.id]?.model==='rigid3d'?r.transforms[sec.id]:identity3d(volumeCenter(sec))});
+  const index=await libraryIndex(),patient=index.patients.find(p=>p.id===ref.patientId);
+  const entries=Object.entries(r.transforms).filter(([id,t])=>id!==ref.id && t.model==='rigid3d').map(([id,transform])=>({secondaryKey:patient?.studies.find(s=>s.id===id)?.key,transform}));
+  if(entries.some(e=>!e.secondaryKey))throw new Error('Una serie vinculada ya no existe en la biblioteca.');
+  if(!entries.some(e=>e.secondaryKey===patient?.studies.find(s=>s.id===sec.id)?.key))entries.push({secondaryKey:await registerStudy(sec),transform:identity3d(volumeCenter(sec))});
+  await request('/group','POST',{referenceKey:await registerStudy(ref),entries,detachedSeriesIds:r.detachedSeriesIds || [],relationPolicies:r.relationPolicies || {}});
 }
 export function filterPatients(patients:LibraryPatient[],query:string):LibraryPatient[] {
   const normalize=(s:string)=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase().replace(/\^/g,' ');
