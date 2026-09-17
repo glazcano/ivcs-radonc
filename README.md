@@ -1,6 +1,6 @@
+
 # ivcs-radonc
-## I Vibecoded a Contouring Station
-*So you don't have to!*
+<img width="316" height="146" alt="logo ivcs" src="https://github.com/user-attachments/assets/62ed683a-c2d0-4ee5-9533-679b4c5741c2" />
 
 Simple radiotherapy contouring software for local use
 
