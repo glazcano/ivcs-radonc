@@ -1,8 +1,9 @@
 
 # ivcs-radonc
-<img width="316" height="146" alt="logo ivcs" src="https://github.com/user-attachments/assets/62ed683a-c2d0-4ee5-9533-679b4c5741c2" />
+<p align="center">
+<img width="316" height="146" alt="logo ivcs" src="https://github.com/user-attachments/assets/a762c350-94f0-4181-a1b6-0df1f8522610" /></p>
+<p align="center">Simple radiotherapy contouring software for local use</p>
 
-Simple radiotherapy contouring software for local use
 
 # Quickstart
 Download a release, unzip, run the Start script (For example: Start.cmd for Windows). A local server will start and the software should open in your default browser.
