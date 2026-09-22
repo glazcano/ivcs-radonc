@@ -55,9 +55,9 @@ export interface RegistrationOptions {metric?:'nmi'|'nmi_linear'|'ncc';voi?:{min
 export function automaticRigid3d(fixed:DicomSeries,moving:DicomSeries,initial:RegistrationTransform,progress?:(p:any)=>void,options:RegistrationOptions={}){
   fixed=fixed.sourceVolume || fixed;moving=moving.sourceVolume || moving;
   if(fixed.slices.length<3 || moving.slices.length<3)throw new Error('El registro volumétrico requiere al menos tres cortes en cada serie.');
-  let best={...initial,model:'rigid3d' as const,scaleX:1,scaleY:1};
+  let best:RegistrationTransform={...initial,model:'rigid3d' as const,scaleX:1,scaleY:1};
   const keys=['translationX','translationY','translationZ','rotationX','rotationY','rotationDeg'] as const;
-  const levels=[8,4,2,1,.5];let finalScore=0;
+  const levels=[8,4,2,1,.5];let finalScore=0,initialScore=-Infinity,initialCoverage=0,finalCoverage=0,lastCoverage=0,startsEvaluated=0;
   // Coverage is relative to the smaller physical acquisition (e.g. prostate MR).
   const support=(v:DicomSeries)=>{const s=v.slices[0];return s.rows*s.cols*s.pixelSpacing[0]*s.pixelSpacing[1]*voxelDepth(v.slices,s)*v.slices.length;};
   const sampleMoving=!options.voi && support(moving)<support(fixed),domain=sampleMoving?moving:fixed,target=sampleMoving?fixed:moving;
@@ -92,7 +92,7 @@ export function automaticRigid3d(fixed:DicomSeries,moving:DicomSeries,initial:Re
         }else {joint[ai*32+bi]++;ha[ai]++;hb[bi]++;}count++;
 
       }
-      const overlap=count/samples.length;if(count<100 || overlap<.25)return -Infinity;
+      const overlap=count/samples.length;lastCoverage=overlap;if(count<100 || overlap<.25)return -Infinity;
       if(options.metric==='ncc'){const den=Math.sqrt(Math.max(0,saa-sa*sa/count)*Math.max(0,sbb-sb*sb/count));return den>1e-8?(sab-sa*sb/count)/den+.05*overlap:-Infinity;}
       const entropy=(h:Float64Array)=>h.reduce((s,v)=>v?s-v/count*Math.log(v/count):s,0),hj=entropy(joint);
       return hj>1e-6?(entropy(ha)+entropy(hb))/hj+.05*overlap:-Infinity;
@@ -101,6 +101,13 @@ export function automaticRigid3d(fixed:DicomSeries,moving:DicomSeries,initial:Re
     if(level===0){
       const a=options.voi?options.voi.min.map((v,i)=>(v+options.voi!.max[i])/2) as Vec3:volumeCenter(fixed),b=transformPoint(volumeCenter(moving),best),centered={...best,translationX:best.translationX+a[0]-b[0],translationY:best.translationY+a[1]-b[1],translationZ:best.translationZ+a[2]-b[2]};
       const centeredScore=score(centered);if(centeredScore>value){best=centered;value=centeredScore;}
+      // Retain independent starts so the first local basin does not dominate.
+      const seeds=[{...initial},{...centered}];
+      for(const key of keys.slice(3))for(const sign of [-1,1])seeds.push({...centered,[key]:(centered[key] || 0)+sign*10});
+      for(const seed of seeds){let candidate=seed,candidateScore=score(seed);startsEvaluated++;
+        for(const step of [8,4])for(let iteration=0;iteration<3;iteration++){let improved=false;for(const key of keys.slice(0,3))for(const sign of [-1,1]){const trial={...candidate,[key]:(candidate[key] || 0)+sign*step},v=score(trial);if(v>candidateScore+1e-7){candidate=trial;candidateScore=v;improved=true;}}if(!improved)break;}
+        if(candidateScore>value+1e-7){best=candidate;value=candidateScore;}
+      }
       // Translation-only initial search avoids compensating a large shift with rotation.
       for(const step of [4,2,1])for(let iteration=0;iteration<8;iteration++){
         let improved=false;for(const key of keys.slice(0,3))for(const sign of [-1,1]){const candidate={...best,[key]:(best[key] || 0)+sign*step},s=score(candidate);if(s>value+1e-7){best=candidate;value=s;improved=true;}}
@@ -112,9 +119,18 @@ export function automaticRigid3d(fixed:DicomSeries,moving:DicomSeries,initial:Re
         for(const sign of [-1,1]){const candidate={...best,[key]:(best[key] || 0)+sign*levels[level]*(key.startsWith('rotation')?.5:1)},s=score(candidate);if(s>winnerScore+1e-7){winner=candidate;winnerScore=s;}}
         if(winner!==best){best=winner;value=winnerScore;changed=true;}
       }progress?.({percent:Math.round((level+(iteration+1)/20)/levels.length*100),score:value,transform:{...best}});if(!changed)break;
-    }finalScore=value;
+    }finalScore=value;if(level===levels.length-1){initialScore=score(initial);initialCoverage=lastCoverage;finalScore=score(best);finalCoverage=lastCoverage;}
   }
   if(!Number.isFinite(finalScore))throw new Error('Solapamiento insuficiente. Inicialice por puntos o centre los volúmenes.');
+  // Compare on the exact same final sample domain before returning a proposal.
+  if(initialScore>finalScore){best={...initial};finalScore=initialScore;finalCoverage=initialCoverage;}
   progress?.({percent:100,score:finalScore,transform:{...best}});
-  return {transform:best,score:finalScore,metric:options.metric || 'nmi'};
+  const center=volumeCenter(moving),displacementMm=Math.hypot(...transformPoint(center,best).map((v,i)=>v-transformPoint(center,initial)[i]));
+  const a=rotationMatrix(initial),b=rotationMatrix(best),trace=a.reduce((sum,v,i)=>sum+v*b[i],0),rotationChangeDeg=Math.acos(Math.max(-1,Math.min(1,(trace-1)/2)))*180/Math.PI;
+  const warnings:string[]=[];
+  if(finalCoverage<.5)warnings.push('Cobertura final inferior al 50%.');
+  if(finalCoverage<initialCoverage-.1)warnings.push('La cobertura disminuyó más de 10 puntos porcentuales.');
+  if(displacementMm>50 || rotationChangeDeg>20)warnings.push('Cambio de transformación amplio; revise el alineamiento inicial.');
+  if(Number.isFinite(initialScore) && finalScore<=initialScore+1e-5)warnings.push('La métrica no mejoró de forma significativa.');
+  return {transform:best,score:finalScore,metric:options.metric || 'nmi',quality:{initialScore:Number.isFinite(initialScore)?initialScore:null,finalScore,initialCoverage,finalCoverage,displacementMm,rotationChangeDeg,startsEvaluated,warnings}};
 }

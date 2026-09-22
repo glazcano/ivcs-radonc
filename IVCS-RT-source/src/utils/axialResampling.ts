@@ -5,19 +5,7 @@ export function needsAxialResampling(series:DicomSeries){const g=acquisitionGeom
 export async function resampleAxial(series:DicomSeries,progress?:(percent:number)=>void,spacingMm?:number):Promise<DicomSeries>{
  if(!needsAxialResampling(series))return series;
  if(series.sourceVolume)throw new Error('No se permite remuestrear una reconstrucción ya derivada.');
- const g=acquisitionGeometry(series.slices,true),first=series.slices[0];
- const spacing=spacingMm ?? Math.min(...first.pixelSpacing,g.spacing);
- if(!Number.isFinite(spacing) || spacing<=0)throw new Error('Espaciado de reconstrucción inválido.');
- const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
- if(g.irregular){
-  for(const s of series.slices)for(const x of [-.5,s.cols-.5])for(const y of [-.5,s.rows-.5])for(const edge of [-.5,.5])for(let i=0;i<3;i++){
-   const v=s.imagePositionPatient![i]+x*g.axes[0][i]+y*g.axes[1][i]+edge*g.spacing*g.normal[i];low[i]=Math.min(low[i],v);high[i]=Math.max(high[i],v);
-  }
- }else
- for(const x of [-.5,first.cols-.5])for(const y of [-.5,first.rows-.5])for(const z of [-.5,series.slices.length-.5])for(let i=0;i<3;i++){
-  const v=g.origin[i]+x*g.axes[0][i]+y*g.axes[1][i]+z*g.axes[2][i];low[i]=Math.min(low[i],v);high[i]=Math.max(high[i],v);
- }
- const size=low.map((v,i)=>Math.max(1,Math.ceil((high[i]-v)/spacing-1e-9))),origin=low.map(v=>v+spacing/2) as [number,number,number];
+ const {size,origin,spacing}=estimateAxialReconstruction(series,spacingMm),g=acquisitionGeometry(series.slices,true),first=series.slices[0];
  if(size.some(v=>v>4096) || size.reduce((a,b)=>a*b,1)>128*1024*1024)throw new Error('La reconstrucción axial supera el límite de memoria (128 millones de vóxeles). No se redujo la resolución automáticamente.');
  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(['ivcs-axial-linear-v1',series.seriesInstanceUID,series.slices.map(s=>s.frameNumber?[s.sopInstanceUID,s.frameNumber,s.imagePositionPatient,s.imageOrientationPatient]:[s.sopInstanceUID,s.imagePositionPatient,s.imageOrientationPatient]),first.cols,first.rows,first.pixelSpacing,spacing,origin,size])));
  const prefix='2.25.'+BigInt('0x'+Array.from(new Uint8Array(hash).slice(0,12),v=>v.toString(16).padStart(2,'0')).join('')).toString(),seriesUID=prefix+'.1';
@@ -34,4 +22,24 @@ export async function resampleAxial(series:DicomSeries,progress?:(percent:number
  }
  const result={...series,seriesInstanceUID:seriesUID,seriesDescription:series.seriesDescription+' [AXIAL MPR]',slices,sourceVolume:series,resampling:{method:g.irregular?'parallel-irregular-v1':'trilinear-v1',spacingMm:spacing,sourceSeriesUID:series.seriesInstanceUID!,irregular:g.irregular,gaps:g.intervals.filter(v=>v>g.spacing*1.5+.01).length}};
  validateVolume(slices);return result;
+}
+
+export function estimateAxialReconstruction(series:DicomSeries,spacingMm?:number){
+ const g=acquisitionGeometry(series.slices,true),first=series.slices[0];
+ const spacing=spacingMm ?? Math.min(...first.pixelSpacing,g.spacing);
+ if(!Number.isFinite(spacing) || spacing<=0)throw new Error('Espaciado de reconstrucción inválido.');
+ const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
+ if(g.irregular){
+  for(const s of series.slices)for(const x of [-.5,s.cols-.5])for(const y of [-.5,s.rows-.5])for(const edge of [-.5,.5])for(let i=0;i<3;i++){
+   const v=s.imagePositionPatient![i]+x*g.axes[0][i]+y*g.axes[1][i]+edge*g.spacing*g.normal[i];low[i]=Math.min(low[i],v);high[i]=Math.max(high[i],v);
+  }
+ }else
+ for(const x of [-.5,first.cols-.5])for(const y of [-.5,first.rows-.5])for(const z of [-.5,series.slices.length-.5])for(let i=0;i<3;i++){
+  const v=g.origin[i]+x*g.axes[0][i]+y*g.axes[1][i]+z*g.axes[2][i];low[i]=Math.min(low[i],v);high[i]=Math.max(high[i],v);
+ }
+ const size=low.map((v,i)=>Math.max(1,Math.ceil((high[i]-v)/spacing-1e-9))),origin=low.map(v=>v+spacing/2) as [number,number,number];
+ const voxels=size.reduce((a,b)=>a*b,1),floating=series.slices.some(s=>s.pixelType==='f32');
+ const sourceBytes=series.slices.reduce((sum,s)=>sum+s.huData.byteLength+(s.valid?.byteLength || 0),0);
+ const workingBytes=voxels*(floating?5:3);
+ return {size,origin,spacing,voxels,sourceBytes,workingBytes,estimatedPeakBytes:sourceBytes*2+workingBytes,supported:size.every(v=>v<=4096)&&voxels<=128*1024*1024};
 }

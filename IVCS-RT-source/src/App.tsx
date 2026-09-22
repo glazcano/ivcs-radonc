@@ -1,3 +1,5 @@
+import {sessionRecords,readSessionFile,saveChunks} from './utils/sessionStream';
+import {trimContourHistory} from './utils/contourHistory';
 import {selectBodyReplacement} from './utils/bodyAlgorithms';
 import {tr,useLanguage} from './i18n';
 import {defaultShortcuts,validShortcuts} from './utils/shortcuts';
@@ -136,7 +138,7 @@ export default function App() {
   const [showHelp, setShowHelp] = useState<boolean>(false);
 
   // Helper to snapshot all ROIs using lightweight structural sharing (masks are immutable once created)
-  const cloneRoisDeep = useCallback((sourceRois: StructureRoi[]): StructureRoi[] => {
+  const snapshotRois = useCallback((sourceRois: StructureRoi[]): StructureRoi[] => {
     return sourceRois.map(roi => ({
       ...roi,
       sliceMasks: { ...roi.sliceMasks }
@@ -230,7 +232,7 @@ export default function App() {
   };
   const handleOpenSession = async (file: File) => {
     setIsLoading(true);setLoadingMessage(tr("Importando sesión a la biblioteca…"));
-    try { const saved = parseSession(await file.text()); await confirmLeave(); await saveSession(saved); applySession(saved); setErrorMessage(null); }
+    try { const saved = await readSessionFile(file); await confirmLeave(); await saveSession(saved); applySession(saved); setErrorMessage(null); }
     catch (err) { setErrorMessage((err as Error).message); }
     finally {setIsLoading(false);}
   };
@@ -295,17 +297,17 @@ export default function App() {
     }catch(e){setErrorMessage((e as Error).message);setIsLoading(false);}
   };
 
-  // Push state to Undo Stack (capped at 10 to maintain snappy memory footprint)
+  // Shared immutable masks; cap unique history buffers as well as state count.
   const pushUndo = useCallback(() => {
-    setUndoStack(prev => [...prev.slice(-50), cloneRoisDeep(rois)]);
+    setUndoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
     setRedoStack([]);
-  }, [rois, cloneRoisDeep]);
+  }, [rois, snapshotRois]);
 
   // Undo Action
   const handleUndo = () => {
     if (undoStack.length === 0) return;
     const previous = undoStack[undoStack.length - 1];
-    setRedoStack(prev => [...prev, cloneRoisDeep(rois)]);
+    setRedoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
     setRois(previous);
     setUndoStack(prev => prev.slice(0, prev.length - 1));
   };
@@ -314,7 +316,7 @@ export default function App() {
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
-    setUndoStack(prev => [...prev, cloneRoisDeep(rois)]);
+    setUndoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
     setRois(next);
     setRedoStack(prev => prev.slice(0, prev.length - 1));
   };
@@ -725,11 +727,10 @@ export default function App() {
     }
   };
 
-  const handleExportRoisJson = () => {
+  const handleExportRoisJson = async () => {
     if (!session) return;
-    const url = URL.createObjectURL(new Blob([serializeSession(session)], {type:'application/json'}));
-    const a = document.createElement('a'); a.href = url; a.download = 'IVCS_RT_sesion.json';
-    a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+    try {await saveChunks('IVCS_RT_session.ivcs',sessionRecords(session));}
+    catch(e){if((e as Error).name!=='AbortError')alert((e as Error).message);}
   };
 
   // Export CSV Report

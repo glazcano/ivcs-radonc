@@ -49,7 +49,7 @@ pnpm test
 
 The generator writes only to `build/release-common/` and refuses to overwrite an existing nonempty demo library. Run it once per fresh checkout. It is required by the DICOM bundle integration tests. An empty local library can use the application's synthetic demo; to test exports with archived originals, import the generated `build/release-common/demo/Luciano_Bello_SYNTHETIC_DICOM.zip`.
 
-Browser tests are optional and require Playwright and Microsoft Edge. Install Playwright with `pnpm add --save-dev playwright` in a local development checkout, or set `IVCS_PLAYWRIGHT_MODULE` to an existing Playwright module path. Build first, then run, for example:
+Browser tests run in CI on Windows, macOS and Linux. Locally they require Playwright with Edge on Windows or Chromium elsewhere; set `IVCS_BROWSER_CHANNEL` to override. Install Playwright in a separate tool directory with `npm install --prefix build/browser-tools playwright@1.55.1` in a local development checkout, or set `IVCS_PLAYWRIGHT_MODULE` to an existing Playwright module path. Build first, then run, for example:
 
 ```sh
 node tests/dicom-bundle-browser.mjs
@@ -63,7 +63,7 @@ These tests use a temporary copy of the generated synthetic library. Some older 
 
 Save manually before exiting. Close the local service before copying a portable folder with its `data/` directory. Do not run multiple instances against the same library.
 
-`pnpm portable` is the existing Windows-only local packaging helper. Run `pnpm build` first. It uses the installed Node executable and copies the local `data/` directory when the destination does not already have one: use a clean checkout with no patient data when making a public package. Platform release scripts that reuse `releases/20260909` require those previously prepared runtime folders and are not a complete cross-platform build pipeline from source alone.
+Public releases are built fresh from source, pinned runtimes and newly generated synthetic data. See [release build instructions](docs/RELEASE_BUILD.md). The separate `pnpm portable --personal` Windows helper deliberately includes your local library and is not for public distribution.
 
 The `.gitignore` excludes local data, binaries, archives, screenshots, credentials and build output. These exclusions do not anonymize files deliberately added elsewhere. Use only synthetic examples in issues and pull requests.
 
@@ -71,7 +71,7 @@ The `.gitignore` excludes local data, binaries, archives, screenshots, credentia
 
 This project is not clinically validated. Verify contours, registration and exported DICOM in the destination TPS before clinical use. DICOM REG support is required to recover the advanced ZIP's registration; local tests do not establish compatibility with Monaco 6 or any other TPS. No plan or dose is exported. Compressed images are not certified for dose calculation.
 
-Regular oblique, coronal and sagittal acquisitions are reconstructed into an axial working grid during import. The native volume remains available for registration and original-file export. A reconstructed primary series exports its new derived DICOM images alongside the originals. Nonparallel or irregular acquisitions are rejected. See the reconstruction details and memory limits below.
+Regular oblique, coronal and sagittal acquisitions are reconstructed into an axial working grid during import. The native volume remains available for registration and original-file export. A reconstructed primary series exports its new derived DICOM images alongside the originals. Parallel irregular acquisitions are supported with explicit gap reporting; nonparallel stacks remain unsupported. See [current status and validation](docs/CURRENT_STATUS.md). See the reconstruction details and memory limits below.
 
 - [Oblique acquisitions and reconstruction](docs/OBLIQUE_20260916.md)
 - [DICOM ZIP and REG export](docs/DICOM_ZIP_20260915.md)

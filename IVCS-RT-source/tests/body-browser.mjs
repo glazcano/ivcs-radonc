@@ -10,7 +10,7 @@ const root=await fs.mkdtemp(path.join(os.tmpdir(),'radcontour-body-ui-'));
 await fs.writeFile(path.join(root,'preferences.json'),JSON.stringify({language:'es'}));
 const app=express();app.use('/api/library',libraryRouter(root));app.use(express.static(path.resolve('dist')));app.get('*',(_req,res)=>res.sendFile(path.resolve('dist/index.html')));
 const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.on('listening',resolve));
-const browser=await chromium.launch({headless:true,channel:'msedge'});
+const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 function fixture(){
   const n=128,huData=Array(n*n).fill(-1000);for(let y=20;y<100;y++)for(let x=25;x<103;x++)huData[y*n+x]=0;
   const slices=Array.from({length:5},(_,z)=>({id:'slice-'+z,sliceIndex:z,rows:n,cols:n,pixelSpacing:[1,1],sliceThickness:1,sliceLocation:z,imagePositionPatient:[0,0,z],imageOrientationPatient:[1,0,0,0,1,0],huData,minHU:-1000,maxHU:0,windowCenter:40,windowWidth:400,rescaleSlope:1,rescaleIntercept:0,sopInstanceUID:'1.2.3.99.'+(z+1),sopClassUID:'1.2.840.10008.5.1.4.1.1.2'}));
@@ -21,7 +21,7 @@ function fixture(){
 try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.locator('input[accept=".json"]').setInputFiles({name:'body.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(fixture()))});
+  await page.locator('input[accept=".json,.ivcs"]').setInputFiles({name:'body.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(fixture()))});
   const save=async()=>{await page.getByRole('button',{name:'Guardar',exact:true}).click();await page.getByRole('status').filter({hasText:'Guardado manual · sin cambios'}).waitFor();};
   await save();await page.locator('#tab-structures').click();
   let writes=0;page.on('request',r=>{if(r.method()==='PUT' && r.url().endsWith('/session'))writes++;});

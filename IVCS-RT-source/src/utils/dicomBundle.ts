@@ -45,7 +45,8 @@ export async function checkedOriginals(series:DicomSeries,archive:ArrayBuffer|Ui
  if(found.size!==wanted.size)throw new Error('Faltan imágenes DICOM originales. No se generó un ZIP incompleto.');
  return [...wanted.keys()].map(uid=>found.get(uid!)!);
 }
-export async function buildDicomBundle(series:DicomSeries,rtstruct:Blob,catalog:BundleCatalog,selectedKeys:string[],progress:(message:string)=>void,signal?:AbortSignal){
+export async function buildDicomBundle(series:DicomSeries,rtstruct:Blob,catalog:BundleCatalog,selectedKeys:string[],progress:(message:string)=>void,signal?:AbortSignal,sink?:{write:(chunk:Uint8Array)=>Promise<void>}){
+ let retainedBytes=0;
  const chosen=selectedKeys.map(key=>{const c=catalog.choices.find(c=>c.entry.key===key);if(!c || c.reason || !c.transform)throw new Error(c?.reason || 'Corregistro rígido 3D inválido.');return c;});
  if(new Set(selectedKeys).size!==selectedKeys.length)throw new Error('Hay series duplicadas.');
  const zip=new JSZip(),report:any={format:'IVCS RT DICOM bundle',referenceSeriesUID:series.seriesInstanceUID,images:[],registrations:[],notes:'Original image bytes unchanged. Reconstructed primary series include derived axial DICOM plus their originals. REG matrices map moving patient LPS to reference patient LPS. Import REG support is required in the destination TPS.'};
@@ -55,6 +56,8 @@ export async function buildDicomBundle(series:DicomSeries,rtstruct:Blob,catalog:
   const response=await fetch('/api/library/originals/'+encodeURIComponent(key),{signal});if(!response.ok)throw new Error('No se pudieron recuperar los originales. Repita la comprobación.');
   const originalBytes=await checkedOriginals(s.sourceVolume || s,await response.arrayBuffer(),signal);
   const bytes=s.sourceVolume?await derivedDicomImages(s,originalBytes):originalBytes;
+  retainedBytes+=bytes.reduce((n,b)=>n+b.byteLength,0)+(s.sourceVolume?originalBytes.reduce((n,b)=>n+b.byteLength,0):0);
+  if(retainedBytes>(sink?1536:256)*1024*1024)throw new Error('El ZIP supera el límite de memoria de este modo de exportación. Exporte menos series.');
   if(s.sourceVolume)for(let i=0;i<originalBytes.length;i++)zip.file(`DICOM/SOURCE_${String(n).padStart(3,'0')}_${String(i+1).padStart(5,'0')}.dcm`,originalBytes[i]);
   for(let i=0;i<bytes.length;i++)zip.file(`DICOM/IMG_${String(n).padStart(3,'0')}_${String(i+1).padStart(5,'0')}.dcm`,bytes[i]);
   report.images.push({resampling:s.resampling,originalImagesIncluded:s.sourceVolume?originalBytes.length:undefined,seriesInstanceUID:s.seriesInstanceUID,studyInstanceUID:s.studyInstanceUID,frameOfReferenceUID:s.frameOfReferenceUID,description:s.seriesDescription,count:bytes.length,sourceCompressed:s.slices.some(v=>v.sourceCompressed),sourceLossy:s.slices.some(v=>v.sourceLossy),sourceRaw:s.slices.some(v=>v.sourceRaw)});
@@ -66,5 +69,19 @@ export async function buildDicomBundle(series:DicomSeries,rtstruct:Blob,catalog:
   const name=`DICOM/REG_${String(i+1).padStart(3,'0')}.dcm`;zip.file(name,reg.bytes);report.registrations.push({file:name,sopInstanceUID:reg.sopInstanceUID,movingSeriesUID:moving.seriesInstanceUID,matrix:reg.matrix,source:c.source});
  }
  zip.file('manifest.json',JSON.stringify(report,null,2));zip.file('README.txt','IVCS RT — DICOM export\n\nExtract the ZIP, then import all files in DICOM into the TPS. RTSTRUCT belongs to the primary series. For reconstructed primary images, the derived axial DICOM and the source originals are both included; import the derived series with its RTSTRUCT. Additional series retain their original pixels and geometry; REG objects encode their rigid alignment. The TPS must support DICOM Spatial Registration and apply the supplied REG. Verify the alignment after import; importing only the images does not apply a manual registration. No plans or dose are included. Compressed/lossy images are not validated for dose calculation. Raw datasets without Part 10 headers remain unchanged and may require destination support.\n');
- checkAbort(signal);progress('Generando ZIP…');const blob=await zip.generateAsync({type:'blob',compression:'STORE',streamFiles:true},()=>checkAbort(signal));checkAbort(signal);return blob;
+ checkAbort(signal);progress('Generando ZIP…');
+ if(sink){await new Promise<void>((resolve,reject)=>{
+  const stream=zip.generateInternalStream({type:'uint8array',compression:'STORE',streamFiles:true});
+  let writes=Promise.resolve(),queued=0,failed=false,ended=false;
+  const abort=()=>{failed=true;stream.pause();reject(new Error('Operación cancelada.'));};signal?.addEventListener('abort',abort,{once:true});
+  const clean=()=>signal?.removeEventListener('abort',abort);
+  stream.on('data',chunk=>{stream.pause();queued+=chunk.byteLength;
+   if(queued>8*1024*1024){failed=true;clean();reject(new Error('ZIP output queue exceeds memory limit.'));return;}
+   // JSZip can emit several descriptor/directory chunks while flushing, even
+   // after pause. Serialize writes and wait for the queue before resuming.
+   writes=writes.then(async()=>{if(!failed)await sink.write(chunk);queued-=chunk.byteLength;if(!queued&&!ended&&!failed&&!signal?.aborted)stream.resume();}).catch(e=>{failed=true;clean();reject(e);});
+  });
+  stream.on('error',e=>{failed=true;clean();reject(e);});stream.on('end',()=>{ended=true;void writes.then(()=>{clean();if(!failed)resolve();});});stream.resume();
+ });return new Blob([]);}
+ const blob=await zip.generateAsync({type:'blob',compression:'STORE',streamFiles:true},()=>checkAbort(signal));checkAbort(signal);return blob;
 }

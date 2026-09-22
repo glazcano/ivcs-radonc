@@ -22,7 +22,7 @@ for folder in sorted(p for p in root.iterdir() if p.is_dir()):
  report={'package':folder.name,'files':len(files),'patientCount':1,'syntheticPatientID':patient['id'],'studies':['CT','MR'],'credentialPatternFindings':findings,'editableApplicationSources':False,'sourceMaps':False}
  reports.append(report)
  (folder/'MANIFEST.json').write_text(json.dumps({f.relative_to(folder).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in files},indent=2),encoding='utf8')
- if 'Windows' in folder.name:
+ if 'Windows' in folder.name or folder.name.endswith('-win-x64'):
   archive=root/(folder.name+'.zip')
   with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
    for f in folder.rglob('*'):

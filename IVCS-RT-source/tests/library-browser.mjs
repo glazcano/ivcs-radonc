@@ -10,7 +10,7 @@ const root=await fs.mkdtemp(path.join(os.tmpdir(),'radcontour-ui-'));
 await fs.writeFile(path.join(root,'preferences.json'),JSON.stringify({language:'es'}));
 const app=express();app.use('/api/library',libraryRouter(root));app.use(express.static(path.resolve('dist')));app.get('*',(_req,res)=>res.sendFile(path.resolve('dist/index.html')));
 const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.on('listening',resolve));
-const browser=await chromium.launch({headless:true,channel:'msedge'});
+const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 function session(id,name,multiple=false) {
   const slice={id:'slice-'+id,sliceIndex:0,rows:32,cols:32,pixelSpacing:[1,1],sliceThickness:1,sliceLocation:0,imagePositionPatient:[0,0,0],imageOrientationPatient:[1,0,0,0,1,0],huData:Array(1024).fill(0),minHU:0,maxHU:0,windowCenter:40,windowWidth:400,rescaleSlope:1,rescaleIntercept:0};
   slice.sopInstanceUID='1.2.3.'+Number(id)+'.1';slice.sopClassUID='1.2.840.10008.5.1.4.1.1.2';
@@ -28,7 +28,7 @@ try {
   const notices=await page.request.get(new URL('/third-party-notices.txt',page.url()).href);assert.equal(notices.status(),200);assert.match(await notices.text(),/Node.js/);
   await page.screenshot({path:path.resolve('about-es-preview.png')});await page.locator('#btn-about-back').click();await page.getByRole('button',{name:'Entendido',exact:true}).click();
 
-  const upload=async s=>{await page.locator('input[accept=".json"]').setInputFiles({name:'case.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(s))});await page.getByRole('button',{name:'Guardar',exact:true}).click();await page.getByRole('status').filter({hasText:'Guardado manual · sin cambios'}).waitFor();};
+  const upload=async s=>{await page.locator('input[accept=".json,.ivcs"]').setInputFiles({name:'case.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(s))});await page.getByRole('button',{name:'Guardar',exact:true}).click();await page.getByRole('status').filter({hasText:'Guardado manual · sin cambios'}).waitFor();};
   await upload(session('001','Pérez^Ana María',true));
   await page.getByRole('button',{name:/Corregistro 3D/}).click();
   await page.getByRole('button',{name:'Guardar grupo en biblioteca'}).click();

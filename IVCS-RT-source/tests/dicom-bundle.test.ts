@@ -31,6 +31,10 @@ test('ZIP preserves original bytes, completeness, RT references and selected reg
   const sopSet=new Set<string>();for(const name of Object.keys(advanced.files).filter(n=>n.endsWith('.dcm'))){const ds=dp.parseDicom(await advanced.file(name)!.async('uint8array'));sopSet.add(ds.string('x00080018')!);}
   const checkRefs=(ds:any)=>{if(ds.elements.x00081155){if(ds.string('x00081150')==='1.2.840.10008.3.1.2.3.1')assert.equal(ds.string('x00081155'),ref.studyInstanceUID);else assert.ok(sopSet.has(ds.string('x00081155')))};for(const e of Object.values(ds.elements) as any[])for(const i of e.items || [])if(i.dataSet)checkRefs(i.dataSet);};
   checkRefs(dp.parseDicom(await advanced.file('DICOM/RTSTRUCT.dcm')!.async('uint8array')));checkRefs(dp.parseDicom(await advanced.file('DICOM/REG_001.dcm')!.async('uint8array')));
+  const chunks:Uint8Array[]=[];let writing=false;
+  const empty=await buildDicomBundle(ref,rt,catalog,[],()=>{},undefined,{write:async chunk=>{assert.equal(writing,false);writing=true;await new Promise(r=>setTimeout(r,0));chunks.push(chunk);writing=false;}});
+  assert.equal(empty.size,0);const streamed=await JSZip.loadAsync(await new Blob(chunks as BlobPart[]).arrayBuffer());assert.deepEqual(await streamed.file('DICOM/IMG_001_00001.dcm')!.async('uint8array'),ctFiles[0]);
+  await assert.rejects(buildDicomBundle(ref,rt,catalog,[],()=>{},undefined,{write:async()=>{throw new Error('disk full');}}),/disk full/);
   const cancelled=new AbortController();cancelled.abort();await assert.rejects(buildDicomBundle(ref,rt,catalog,[],()=>{},cancelled.signal),/cancelada/);
  }finally{globalThis.fetch=originalFetch;}
 });

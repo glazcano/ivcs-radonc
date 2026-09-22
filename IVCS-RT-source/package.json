@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "release:stage": "node scripts/stagePublicRelease.mjs",
+    "test:browser": "node --import tsx tests/registration-browser.mts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

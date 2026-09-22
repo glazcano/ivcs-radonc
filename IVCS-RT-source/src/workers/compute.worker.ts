@@ -6,9 +6,13 @@ import {refineBodyContinuity,reviewBody, type BodyMasks} from '../utils/bodyAlgo
 import type {DicomSlice} from '../types';
 const bodySlices:DicomSlice[]=[];
 let bodyMasks:BodyMasks={};
+let registrationArgs:any[]=[];
 self.onmessage=async({data})=>{
   try{
     const {kind,args}=data;let result:any;
+    if(kind==='registrationInit'){registrationArgs=args;self.postMessage({ready:true});return;}
+    if(kind==='registrationSlice'){registrationArgs[args[0]].slices.push(args[1]);self.postMessage({ready:true});return;}
+    if(kind==='registrationRun'){result=automaticRigid3d(registrationArgs[0],registrationArgs[1],registrationArgs[2],progress=>self.postMessage({progress}),registrationArgs[3]);registrationArgs=[];self.postMessage({result});return;}
     if(kind==='bodyBatch'){
       const options=args[1],continuity=options.useContinuity!==false && options.removeTableAndNoise!==false;
       for(const slice of args[0] as DicomSlice[]){

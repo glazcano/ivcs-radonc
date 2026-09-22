@@ -14,7 +14,7 @@ window.check=(opacity,angle,reverse=false)=>{camera.position.set(Math.sin(angle)
 window.dispose=()=>{compositor.dispose();group.children.forEach(m=>{m.geometry.dispose();m.material.dispose();});renderer.dispose();};
 `,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',write:false});
 const app=express();app.get('/favicon.ico',(_,res)=>res.status(204).end());app.get('/',(_,res)=>res.send('<script type="module" src="/test.js"></script>'));app.get('/test.js',(_,res)=>res.type('js').send(result.outputFiles[0].text));const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.on('listening',r));
-const browser=await chromium.launch({headless:true,channel:'msedge',args:['--enable-unsafe-swiftshader']});
+const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined),args:['--enable-unsafe-swiftshader']});
 try{const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});await page.goto('http://127.0.0.1:'+server.address().port);await page.waitForFunction(()=>window.check);
 for(const angle of [0,.7,1.8,3.1]){
 const a=await page.evaluate(a=>window.check(.5,a),angle),b=await page.evaluate(a=>window.check(.5,a,true),angle);

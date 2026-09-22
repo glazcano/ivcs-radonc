@@ -2,6 +2,7 @@ import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {build} from 'esbuild';
 
+if(!process.argv.includes('--personal'))throw new Error('This command includes your working patient library. Use --personal explicitly, or release:stage for public synthetic packages.');
 const destination=path.resolve('RadContour-portable');
 await fs.mkdir(path.join(destination,'runtime'),{recursive:true});
 await build({entryPoints:['server/main.mjs'],bundle:true,platform:'node',format:'cjs',outfile:path.join(destination,'server.cjs')});

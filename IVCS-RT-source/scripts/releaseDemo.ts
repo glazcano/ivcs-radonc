@@ -6,7 +6,7 @@ import {DicomBinaryBuffer as B,exportMonacoRtStruct} from '../src/utils/monacoRt
 import {parseDicomByteArray} from '../src/utils/dicomParser';
 import {createLibrary} from '../server/library.mjs';
 import {importRtStruct,compareContours} from '../src/utils/rtStructImporter';
-const root=path.resolve('build/release-common');await fs.mkdir(root,{recursive:true});
+const root=path.resolve(process.env.IVCS_DEMO_DEST || 'build/release-common');await fs.mkdir(root,{recursive:true});
 const {series,studies,initialRois,registrationState}=createDemoRadiotherapyDataset();
 const plain=(v:any)=>JSON.parse(JSON.stringify(v,(_,x)=>x instanceof Int16Array || x instanceof Uint8Array?Array.from(x):x));
 const library=createLibrary(path.join(root,'data'));

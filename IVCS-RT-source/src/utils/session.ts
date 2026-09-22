@@ -23,14 +23,16 @@ export function serializeSession(session: Session): string {
 }
 
 export function parseSession(text: string): Session {
-  const s = JSON.parse(text);
+  return validateSessionObject(JSON.parse(text));
+}
+export function validateSessionObject(s:any):Session {
   if (s?.format !== 'radcontour-session' || s.version !== 1 || !Array.isArray(s.rois) || !Array.isArray(s.studies)) throw new Error('No es una sesión IVCS RT compatible. Los reportes JSON antiguos no contienen contornos.');
   const restoreSlices = (series: DicomSeries,original=false) => {
     if (!series || !Array.isArray(series.slices)) throw new Error('Sesión sin imágenes.');
     series.slices.forEach((slice,i) => {
-      if (!Number.isInteger(slice.rows) || !Number.isInteger(slice.cols) || slice.rows <= 0 || slice.cols <= 0 || slice.sliceIndex !== i || !Array.isArray(slice.huData) || slice.huData.length !== slice.rows*slice.cols || !slice.huData.every(v=>slice.pixelType==='f32'?Number.isFinite(v) && Number.isFinite(Math.fround(v)):Number.isInteger(v) && v >= -32768 && v <= 32767)) throw new Error('Imágenes inválidas en la sesión.');
-      slice.huData = slice.pixelType==='f32'?new Float32Array(slice.huData):new Int16Array(slice.huData);
-      if(slice.valid){if(!Array.isArray(slice.valid) || slice.valid.length!==slice.rows*slice.cols || !slice.valid.every(v=>v===0 || v===1))throw new Error('Máscara de adquisición inválida.');slice.valid=new Uint8Array(slice.valid);}
+      if (!Number.isInteger(slice.rows) || !Number.isInteger(slice.cols) || slice.rows <= 0 || slice.cols <= 0 || slice.sliceIndex !== i || !(Array.isArray(slice.huData) || slice.huData instanceof Int16Array || slice.huData instanceof Float32Array) || slice.huData.length !== slice.rows*slice.cols || !slice.huData.every(v=>slice.pixelType==='f32'?Number.isFinite(v) && Number.isFinite(Math.fround(v)):Number.isInteger(v) && v >= -32768 && v <= 32767)) throw new Error('Imágenes inválidas en la sesión.');
+      if(Array.isArray(slice.huData))slice.huData = slice.pixelType==='f32'?new Float32Array(slice.huData):new Int16Array(slice.huData);
+      if(slice.valid){if(!(Array.isArray(slice.valid) || slice.valid instanceof Uint8Array) || slice.valid.length!==slice.rows*slice.cols || !slice.valid.every(v=>v===0 || v===1))throw new Error('Máscara de adquisición inválida.');if(Array.isArray(slice.valid))slice.valid=new Uint8Array(slice.valid);}
     });
     if(original)acquisitionGeometry(series.slices,true);else validateVolume(series.slices);
     if(series.sourceVolume){if(original || series.sourceVolume.patientId!==series.patientId || series.sourceVolume.frameOfReferenceUID!==series.frameOfReferenceUID || series.sourceVolume.seriesInstanceUID===series.seriesInstanceUID)throw new Error('Referencia de reconstrucción inválida.');restoreSlices(series.sourceVolume,true);}
@@ -42,10 +44,10 @@ export function parseSession(text: string): Session {
   for (const roi of s.rois) {
     if (!roi || typeof roi.id !== 'string' || ids.has(roi.id) || typeof roi.name !== 'string' || !['GTV','CTV','PTV','OAR','EXTERNAL','PRV','SUPPORT','AVOIDANCE'].includes(roi.type) || !/^#[0-9a-f]{6}$/i.test(roi.color) || typeof roi.visible !== 'boolean' || typeof roi.locked !== 'boolean' || !Number.isFinite(roi.opacity) || roi.opacity < 0 || roi.opacity > 1 || !roi.sliceMasks || typeof roi.sliceMasks !== 'object') throw new Error('Estructura inválida en la sesión.');
     ids.add(roi.id);
-    for (const [key,mask] of Object.entries(roi.sliceMasks)) {
+    for (const [key,mask] of Object.entries(roi.sliceMasks) as [string,any][]) {
       const slice = s.series.slices[Number(key)];
-      if (!/^\d+$/.test(key) || !slice || !Array.isArray(mask) || mask.length !== slice.rows*slice.cols || !mask.every(v=>v===0 || v===1)) throw new Error('Máscara inválida en la sesión.');
-      roi.sliceMasks[key] = new Uint8Array(mask);
+      if (!/^\d+$/.test(key) || !slice || !(Array.isArray(mask) || mask instanceof Uint8Array) || mask.length !== slice.rows*slice.cols || !mask.every(v=>v===0 || v===1)) throw new Error('Máscara inválida en la sesión.');
+      if(Array.isArray(mask))roi.sliceMasks[key] = new Uint8Array(mask);
     }
   }
   if (!Number.isInteger(s.currentSliceIndex) || !s.series.slices[s.currentSliceIndex] || !Number.isFinite(s.windowCenter) || !Number.isFinite(s.windowWidth) || s.windowWidth <= 0 || (s.activeRoiId !== null && !ids.has(s.activeRoiId))) throw new Error('Ajustes de sesión inválidos.');

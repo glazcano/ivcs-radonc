@@ -3,7 +3,7 @@ import express from 'express';import {promises as fs} from 'node:fs';import path
 import {libraryRouter,createLibrary} from '../server/library.mjs';import dicomParser from 'dicom-parser';import JSZip from 'jszip';
 const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE || 'playwright');
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'ivcs-import-'));const app=express();app.use('/api/library',libraryRouter(root));app.use(express.static(path.resolve('dist')));app.get('*',(_req,res)=>res.sendFile(path.resolve('dist/index.html')));
-const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.on('listening',r));const browser=await chromium.launch({headless:true,channel:'msedge'});
+const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.on('listening',r));const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 try{
  const page=await browser.newPage({viewport:{width:1500,height:950}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')console.log(m.text().slice(0,500));});await page.goto('http://127.0.0.1:'+server.address().port);await page.getByRole('button',{name:'Save',exact:true}).waitFor();
  const input=page.locator('input[accept=".dcm,.zip"]');

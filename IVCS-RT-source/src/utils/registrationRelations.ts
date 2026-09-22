@@ -5,15 +5,16 @@ export interface RelationStudy {id:string;key?:string;frameOfReferenceUID?:strin
 export interface RelationGroup {referenceKey:string;transforms:Record<string,RegistrationTransform>;}
 export type RelationPolicy='preserve'|'dicom'|'saved'|'single';
 export function linkedRelations(nodes:RelationStudy[],groups:RelationGroup[],selected:string,reference:string,detached:string[]=[],policy:RelationPolicy='preserve'){
- const links=new Map<string,{id:string;t:RegistrationTransform}[]>(),conflicts:string[]=[];
- const edge=(a:string,b:string,t:RegistrationTransform)=>{if(detached.includes(a)||detached.includes(b))return;links.set(a,[...(links.get(a)||[]),{id:b,t}]);links.set(b,[...(links.get(b)||[]),{id:a,t:inverse(t)}]);};
+ const links=new Map<string,{id:string;t:RegistrationTransform;source:string}[]>(),conflicts:string[]=[];
+ const edge=(a:string,b:string,t:RegistrationTransform,source:string)=>{if(detached.includes(a)||detached.includes(b))return;links.set(a,[...(links.get(a)||[]),{id:b,t,source}]);links.set(b,[...(links.get(b)||[]),{id:a,t:inverse(t),source}]);};
  if(policy!=='single'){
- if(policy!=='saved')for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++)if(nodes[i].frameOfReferenceUID && nodes[i].frameOfReferenceUID===nodes[j].frameOfReferenceUID)edge(nodes[i].id,nodes[j].id,identity3d());
- if(policy!=='dicom')for(const g of groups){const a=nodes.find(n=>n.key===g.referenceKey);if(!a || a.id===reference)continue;for(const [key,t] of Object.entries(g.transforms)){const b=nodes.find(n=>n.key===key);if(b && b.id!==reference && t.model==='rigid3d')edge(a.id,b.id,t);}}
+ if(policy!=='saved')for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++)if(nodes[i].frameOfReferenceUID && nodes[i].frameOfReferenceUID===nodes[j].frameOfReferenceUID)edge(nodes[i].id,nodes[j].id,identity3d(),'DICOM FoR');
+ if(policy!=='dicom')for(const g of groups){const a=nodes.find(n=>n.key===g.referenceKey);if(!a || a.id===reference)continue;for(const [key,t] of Object.entries(g.transforms)){const b=nodes.find(n=>n.key===key);if(b && b.id!==reference && t.model==='rigid3d')edge(a.id,b.id,t,'Saved group '+g.referenceKey);}}
  }
+ const paths:Record<string,string[]>={[selected]:[selected]},sources:Record<string,string[]>={[selected]:[]};
  const toSelected:Record<string,RegistrationTransform>={[selected]:identity3d()},queue=[selected];
- for(let i=0;i<queue.length;i++){const id=queue[i];for(const next of links.get(id)||[]){const t=compose(toSelected[id],next.t);if(toSelected[next.id]){if(!sameTransform(toSelected[next.id],t))conflicts.push(next.id);}else{toSelected[next.id]=t;queue.push(next.id);}}}
- return {toSelected,conflicts:[...new Set(conflicts)]};
+ for(let i=0;i<queue.length;i++){const id=queue[i];for(const next of links.get(id)||[]){const t=compose(toSelected[id],next.t);if(toSelected[next.id]){if(!sameTransform(toSelected[next.id],t))conflicts.push(next.id);}else{toSelected[next.id]=t;paths[next.id]=[...paths[id],next.id];sources[next.id]=[...sources[id],next.source];queue.push(next.id);}}}
+ return {toSelected,paths,sources,conflicts:[...new Set(conflicts)]};
 }
 export function relatedInitial(r:RegistrationState,nodes:RelationStudy[],groups:RelationGroup[],selected:string){
  if(r.transforms[selected])return r.transforms[selected];
