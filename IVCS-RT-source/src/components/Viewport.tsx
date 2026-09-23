@@ -1,10 +1,13 @@
+import {Detachable} from './Detachable';
+import {referencePlane,planeMask,writePlaneMask,ImagePlane} from '../utils/panelPlane';
+import {secondaryDisplay} from '../utils/fusionDisplay';
 import {drawFusion} from '../utils/fusionDisplay';
 import {ConfigurablePane,defaultPanes,PaneConfig} from './ConfigurablePane';
 import {tr} from '../i18n';
 import {connectedThreshold} from '../utils/contourEngine';
 import {resamplePlane,identity3d,volumeCenter} from '../utils/rigid3d';
 import { getRecent, putBounded, bitmapBytes } from '../utils/renderCache';
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -44,7 +47,6 @@ import {
   getMaskBoundingBox
 } from '../utils/contourEngine';
 import { renderSliceToCanvas } from '../utils/registrationEngine';
-import { MprOrthogonalView } from './MprOrthogonalView';
 import { MprControlPanel } from './MprControlPanel';
 import { voxelToPatientCoordinates } from '../utils/mprEngine';
 
@@ -60,6 +62,17 @@ interface MaskCanvasEntry {
 
 interface ViewportProps {
   keyboardDisabled?:boolean;
+  embedded?:boolean;
+  secondaryOnly?:boolean;
+  planeLabel?:ImagePlane;
+  fitIdentity?:unknown;
+  crosshairPosition?:{x:number;y:number};
+  crosshairsVisible?:boolean;
+  planeIndexLabel?:string;
+  onEditorActivate?:(canvas:HTMLCanvasElement)=>void;
+  onPlaneScroll?:(step:number)=>void;
+  onPlaneNavigate?:(x:number,y:number)=>void;
+  onUpdateRoiMasks?:(roiId:string,masks:StructureRoi['sliceMasks'])=>void;
   series: DicomSeries | null;
   currentSliceIndex: number;
   onSliceChange: (index: number) => void;
@@ -85,7 +98,7 @@ interface ViewportProps {
 }
 
 export const Viewport: React.FC<ViewportProps> = ({
-  series,
+  series, embedded=false, secondaryOnly=false, planeLabel='axial', fitIdentity, crosshairPosition, crosshairsVisible, planeIndexLabel, onEditorActivate, onPlaneScroll, onPlaneNavigate, onUpdateRoiMasks,
   currentSliceIndex,
   onSliceChange,
   rois,
@@ -105,8 +118,9 @@ export const Viewport: React.FC<ViewportProps> = ({
   studies = [],
   registrationState,
   onOpenRegistrationModal
-}) => {
+}:ViewportProps) => {
   const [detailPlane,setDetailPlane]=useState<'axial'|'coronal'|'sagittal'>('axial');
+  const focusedEditor=useRef<HTMLCanvasElement|null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -288,15 +302,16 @@ export const Viewport: React.FC<ViewportProps> = ({
     isDrawingRef.current = false;
     currentDraftMaskRef.current = null;
     originalStrokeMaskRef.current = null;
-  }, [currentSliceIndex, activeRoi?.id, activeTool]);
+    setPolygonPoints([]);pencilPointsRef.current=[];polygonRubberBandRef.current=null;
+  }, [currentSliceIndex, series?.slices[currentSliceIndex]?.id, activeRoi?.id, activeTool, keyboardDisabled]);
 
   // Clean up RAFs and timers on unmount
   useEffect(() => {
     return () => {
-      if (renderRafRef.current !== null) cancelAnimationFrame(renderRafRef.current);
-      if (probeRafRef.current !== null) cancelAnimationFrame(probeRafRef.current);
-      if (windowDragRafRef.current !== null) cancelAnimationFrame(windowDragRafRef.current);
-      if (sliceScrollRafRef.current !== null) cancelAnimationFrame(sliceScrollRafRef.current);
+      if (renderRafRef.current !== null) (canvasRef.current?.ownerDocument.defaultView || window).cancelAnimationFrame(renderRafRef.current);
+      if (probeRafRef.current !== null) (canvasRef.current?.ownerDocument.defaultView || window).cancelAnimationFrame(probeRafRef.current);
+      if (windowDragRafRef.current !== null) (canvasRef.current?.ownerDocument.defaultView || window).cancelAnimationFrame(windowDragRafRef.current);
+      if (sliceScrollRafRef.current !== null) (canvasRef.current?.ownerDocument.defaultView || window).cancelAnimationFrame(sliceScrollRafRef.current);
       if (brushHudTimeoutRef.current) clearTimeout(brushHudTimeoutRef.current);
     };
   }, []);
@@ -354,13 +369,24 @@ export const Viewport: React.FC<ViewportProps> = ({
     setPan({ x: 0, y: 0 });
   }, [currentSlice]);
 
+  useEffect(()=>{
+    const canvas=canvasRef.current;if(!canvas)return;
+    const command=(event:Event)=>{const action=(event as CustomEvent).detail;if(action==='clear'||action==='holes'){if(!activeRoi||activeRoi.locked||!currentSlice||keyboardDisabled)return;const mask=action==='clear'?createEmptyMask(currentSlice.rows,currentSlice.cols):fillEnclosedHolesOnMask(activeRoi.sliceMasks[currentSliceIndex]||createEmptyMask(currentSlice.rows,currentSlice.cols),currentSlice.rows,currentSlice.cols);onUpdateRoiMask(activeRoi.id,currentSliceIndex,mask,action);return;}if(action==='fit')handleResetView();else setZoom(z=>Math.max(.1,Math.min(6,z*(action==='in'?1.25:.8))));};
+    canvas.addEventListener('ivcs-view-command',command);return()=>canvas.removeEventListener('ivcs-view-command',command);
+  },[handleResetView,mprViewMode,activeRoi,currentSlice,currentSliceIndex,onUpdateRoiMask,keyboardDisabled]);
+  const viewCommand=(action:string)=>{
+    if(mprViewMode==='axial'){if(action==='fit')handleResetView();else setZoom(z=>Math.max(.1,Math.min(6,z*(action==='in'?1.25:.8))));return;}
+    const canvas=focusedEditor.current?.isConnected?focusedEditor.current:containerRef.current?.querySelector<HTMLCanvasElement>('canvas[data-testid^="editable-"]');
+    canvas?.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:action}));
+  };
+
   // Initial fit when slice loads first time
   useEffect(() => {
-    if (currentSlice && series && fittedSeriesRef.current !== series && canvasRef.current?.clientWidth) {
-      fittedSeriesRef.current = series;
+    if (currentSlice && series && fittedSeriesRef.current !== (fitIdentity || series) && canvasRef.current?.clientWidth) {
+      fittedSeriesRef.current = (fitIdentity || series) as DicomSeries;
       handleResetView();
     }
-  }, [series, currentSlice, handleResetView]);
+  }, [series, fitIdentity, currentSlice, handleResetView]);
 
   // Helper: Renders mask to context with 4-neighborhood boundary line or 17-level sub-pixel anti-aliased profile
   const renderMaskToContext = useCallback((
@@ -803,6 +829,7 @@ export const Viewport: React.FC<ViewportProps> = ({
           putBounded(secondaryOffscreenMap.current,fusionKey,secCanvas,16*1024*1024,bitmapBytes);
         }
         if (secCanvas) {
+          if(secondaryOnly){ctx.fillStyle='#000';ctx.fillRect(0,0,cols,rows);}
           drawFusion(ctx,secCanvas,registrationState);
         }
       }
@@ -1002,12 +1029,12 @@ export const Viewport: React.FC<ViewportProps> = ({
     }
 
     // 6. Render Crosshairs for MPR navigation (Coronal Y in Emerald, Sagittal X in Amber)
-    if (showCrosshairs && currentSlice) {
+    if ((crosshairsVisible ?? showCrosshairs) && currentSlice) {
       ctx.save();
       ctx.lineWidth = 1 / zoom;
 
       // Vertical line: Sagittal plane (X)
-      const sagX = Math.max(0, Math.min(currentSlice.cols - 1, mprCoords.x));
+      const sagX = Math.max(0, Math.min(currentSlice.cols - 1, crosshairPosition?.x ?? mprCoords.x));
       ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)'; // Amber
       ctx.setLineDash([4 / zoom, 4 / zoom]);
       ctx.beginPath();
@@ -1016,7 +1043,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       ctx.stroke();
 
       // Horizontal line: Coronal plane (Y)
-      const corY = Math.max(0, Math.min(currentSlice.rows - 1, mprCoords.y));
+      const corY = Math.max(0, Math.min(currentSlice.rows - 1, crosshairPosition?.y ?? mprCoords.y));
       ctx.strokeStyle = 'rgba(16, 185, 129, 0.75)'; // Emerald
       ctx.beginPath();
       ctx.moveTo(0, corY);
@@ -1050,10 +1077,10 @@ export const Viewport: React.FC<ViewportProps> = ({
     getCachedCtCanvas,
     getCachedRoiMaskCanvas,
     studies,
-    registrationState,
+    registrationState, secondaryOnly,
     multi,
     getCachedSecondaryCanvas,
-    showCrosshairs,
+    showCrosshairs, crosshairsVisible, crosshairPosition,
     mprCoords.x,
     mprCoords.y
   ]);
@@ -1152,7 +1179,8 @@ export const Viewport: React.FC<ViewportProps> = ({
 
   // Mouse Down Event Handler
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement> | React.PointerEvent<HTMLCanvasElement>) => {
-    if (!currentSlice) return;
+    if (!currentSlice || keyboardDisabled) return;
+    if (e.shiftKey && e.button===0 && onPlaneNavigate) {const p=screenToImageCoords(e.clientX,e.clientY);if(p)onPlaneNavigate(p.x,p.y);return;}
 
     // Refresh cursor overlay at mouse position
     updateCursorOverlay(e.clientX, e.clientY);
@@ -1315,7 +1343,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
     // Throttle cursor probe HUD updates to 60fps directly via DOM ref to eliminate React re-render cascades
     if (probeRafRef.current === null) {
-      probeRafRef.current = requestAnimationFrame(() => {
+      probeRafRef.current = (canvasRef.current?.ownerDocument.defaultView || window).requestAnimationFrame(() => {
         probeRafRef.current = null;
         const el = probeHudRef.current;
         if (!el) return;
@@ -1346,7 +1374,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         pendingWindowRef.current = { wc: newWc, ww: newWw };
 
         if (windowDragRafRef.current === null) {
-          windowDragRafRef.current = requestAnimationFrame(() => {
+          windowDragRafRef.current = (canvasRef.current?.ownerDocument.defaultView || window).requestAnimationFrame(() => {
             windowDragRafRef.current = null;
             if (pendingWindowRef.current) {
               onWindowChange(pendingWindowRef.current.wc, pendingWindowRef.current.ww);
@@ -1376,7 +1404,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       if (coords) {
         polygonRubberBandRef.current = [coords.x, coords.y];
         if (renderRafRef.current === null) {
-          renderRafRef.current = requestAnimationFrame(() => {
+          renderRafRef.current = (canvasRef.current?.ownerDocument.defaultView || window).requestAnimationFrame(() => {
             renderRafRef.current = null;
             renderCanvas();
           });
@@ -1414,7 +1442,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       
       // Throttle canvas stroke repainting to RAF for stutter-free brush response
       if (renderRafRef.current === null) {
-        renderRafRef.current = requestAnimationFrame(() => {
+        renderRafRef.current = (canvasRef.current?.ownerDocument.defaultView || window).requestAnimationFrame(() => {
           renderRafRef.current = null;
           renderCanvas();
         });
@@ -1430,7 +1458,7 @@ export const Viewport: React.FC<ViewportProps> = ({
           pts.push([coords.x, coords.y]);
         }
         if (renderRafRef.current === null) {
-          renderRafRef.current = requestAnimationFrame(() => {
+          renderRafRef.current = (canvasRef.current?.ownerDocument.defaultView || window).requestAnimationFrame(() => {
             renderRafRef.current = null;
             renderCanvas();
           });
@@ -1445,7 +1473,7 @@ export const Viewport: React.FC<ViewportProps> = ({
     setIsDragging(false);
 
     if (renderRafRef.current !== null) {
-      cancelAnimationFrame(renderRafRef.current);
+      (canvasRef.current?.ownerDocument.defaultView || window).cancelAnimationFrame(renderRafRef.current);
       renderRafRef.current = null;
     }
 
@@ -1572,7 +1600,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   // Mouse Wheel: Scroll slices, Zoom (with Ctrl/Alt), or Brush Diameter (with Shift)
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    if (!series || series.slices.length === 0 || isDrawingRef.current) return;
+    if (!series || keyboardDisabled || series.slices.length === 0 || isDrawingRef.current) return;
 
     // 0. Shift + Mouse Wheel: Ergonomic Brush & Eraser Diameter Adjustment
     if (e.shiftKey) {
@@ -1607,6 +1635,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       setZoom(prev => Math.max(0.2, Math.min(prev * zoomFactor, 6.0)));
       return;
     }
+    if(onPlaneScroll){onPlaneScroll(Math.sign(e.deltaY));return;}
 
     // Normalize delta across browsers and input modes:
     // deltaMode 0 = PIXEL (Chrome/Safari default, macOS trackpad)
@@ -1656,6 +1685,8 @@ export const Viewport: React.FC<ViewportProps> = ({
   // Keyboard shortcut listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (embedded && canvasRef.current?.ownerDocument.activeElement!==canvasRef.current) return;
+      if (!embedded && (document.activeElement as HTMLElement)?.dataset?.testid?.startsWith('editable-'))return;
       if (document.querySelector('[role="dialog"]') || keyboardDisabled || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
 
       if (e.key === 'Escape') {
@@ -1664,6 +1695,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         setRulerEnd(null);
       } else if (e.key === 'Enter' && activeTool === 'polygon' && polygonPoints.length >= 3) {
         finishPolygon();
+      } else if(onPlaneScroll && ['ArrowUp','PageUp','ArrowDown','PageDown'].includes(e.key)){e.preventDefault();onPlaneScroll(e.key==='ArrowUp'||e.key==='PageUp'?-1:1);
       } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
         if (series && currentSliceIndex > 0) onSliceChange(currentSliceIndex - 1);
       } else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
@@ -1671,9 +1703,10 @@ export const Viewport: React.FC<ViewportProps> = ({
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [keyboardDisabled, cancelPolygon, finishPolygon, activeTool, onActiveToolChange, polygonPoints.length, series, currentSliceIndex, onSliceChange]);
+    const keyWindow=canvasRef.current?.ownerDocument.defaultView || window;
+    keyWindow.addEventListener('keydown', handleKeyDown);
+    return () => keyWindow.removeEventListener('keydown', handleKeyDown);
+  }, [embedded, onPlaneScroll, keyboardDisabled, cancelPolygon, finishPolygon, activeTool, onActiveToolChange, polygonPoints.length, series, currentSliceIndex, onSliceChange]);
 
   // Context Menu prevent default on canvas
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -1694,23 +1727,23 @@ export const Viewport: React.FC<ViewportProps> = ({
 
   const mprControls=<MprControlPanel series={series} coordinates={mprCoords} onNavigateCoordinates={handleNavigateCoordinates} activeRoi={activeRoiRef.current} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} onSelectViewMode={setMprViewMode} windowCenter={windowCenter} windowWidth={windowWidth}/>;
   const axialPanel=(
-<div onPointerEnter={()=>setDetailPlane('axial')} className="relative w-full h-full min-h-0 flex-1 flex flex-col bg-black overflow-hidden border border-[#1C1C1E]">
+<div onPointerEnter={()=>{setDetailPlane('axial');if(canvasRef.current)onEditorActivate?.(canvasRef.current);}} className="relative w-full h-full min-h-0 flex-1 flex flex-col bg-black overflow-hidden border border-[#1C1C1E]">
             {/* Top Badge for Triplanar mode */}
             {(multi || mprViewMode === 'axial') && (
               <div className="h-8 px-2 flex items-center justify-between shrink-0 bg-zinc-950">
                 <div className="flex items-center gap-2 pointer-events-auto bg-[#111112]/90 border border-[#262626] px-2.5 py-1 rounded backdrop-blur-xs shadow-md text-xs">
-                  <span onDoubleClick={()=>setMprViewMode(multi?'axial':'triplanar')} className="font-bold text-sky-400">{" "}{tr("Plano Axial (XY)")}{" "}</span>
+                  <span onDoubleClick={()=>setMprViewMode(multi?'axial':'triplanar')} className="font-bold text-sky-400">{" "}{tr(embedded?(planeLabel==='axial'?'Axial':planeLabel==='coronal'?'Coronal':'Sagital'):'Plano Axial (XY)')}{" "}</span>
                   <span className="text-[#777]">•</span>
-                  <span className="text-[#AAA] font-mono text-[11px]">{" "}{tr("Z:")}{" "}{currentSliceIndex + 1}/{series?.slices.length || 0}
+                  <span className="text-[#AAA] font-mono text-[11px]">{" "}{tr(planeLabel==='axial'?'Z:':planeLabel==='coronal'?'Y:':'X:')}{" "}{planeIndexLabel || `${currentSliceIndex + 1}/${series?.slices.length || 0}`} 
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                <button type="button" onClick={handleResetView} title={tr('Restablecer zoom axial')} aria-label={tr('Restablecer zoom axial')}
+                <button type="button" onClick={handleResetView} title={tr(embedded?'Restablecer vista':'Restablecer zoom axial')} aria-label={tr(embedded?'Restablecer vista':'Restablecer zoom axial')}
                   className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md">
                   <RotateCcw className="w-3.5 h-3.5" />
                 </button>
                 <button
-                  onClick={() => setMprViewMode(multi?'axial':'triplanar')}
+                  onClick={() => setMprViewMode(multi?'axial':'triplanar')} hidden={embedded}
                   className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md"
                   title={tr("Maximizar Plano Axial")}
                 >
@@ -1721,17 +1754,17 @@ export const Viewport: React.FC<ViewportProps> = ({
             )}
 
             {/* Anatomical Orientation Markers (A/P/R/L) */}
-            <div className="absolute top-10 left-1/2 -translate-x-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{"A"}</div>
-            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{"P"}</div>
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{"R"}</div>
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{"L"}</div>
+            <div className="absolute top-10 left-1/2 -translate-x-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{planeLabel==='axial'?'A':'S'}</div>
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{planeLabel==='axial'?'P':'I'}</div>
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{planeLabel==='sagittal'?'A':'R'}</div>
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-sky-400/80 font-mono pointer-events-none drop-shadow z-5">{planeLabel==='sagittal'?'P':'L'}</div>
 
             {/* Canvas Viewport */}
             <canvas
               ref={canvasRef}
-              data-testid="axial-canvas" data-slice-index={currentSliceIndex} data-zoom={zoom} data-pan-x={pan.x} data-pan-y={pan.y}
+              tabIndex={0} data-testid={embedded?`editable-${planeLabel}`:"axial-canvas"} data-slice-index={currentSliceIndex} data-zoom={zoom} data-pan-x={pan.x} data-pan-y={pan.y}
         onPointerDown={(e) => {
-          if (!e.isPrimary) return;
+          if (!e.isPrimary) return; e.currentTarget.focus();
           try {
             e.currentTarget.setPointerCapture(e.pointerId);
           } catch {
@@ -1771,10 +1804,10 @@ export const Viewport: React.FC<ViewportProps> = ({
             probeHudRef.current.innerHTML = `<div class="text-[#777]"></div>`;
           }
         }}
-        onDoubleClick={handleDoubleClick}
+        onDoubleClick={embedded && activeTool!=='polygon'?undefined:handleDoubleClick}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
-        className={`w-full h-0 min-h-0 flex-1 bg-black touch-none ${
+        className={`w-full h-0 min-h-0 flex-1 bg-black touch-none outline-none focus-visible:outline-sky-500 ${
           activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' :
           activeTool === 'window' ? 'cursor-ew-resize' :
           activeTool === 'zoom' ? 'cursor-ns-resize' :
@@ -1824,6 +1857,8 @@ export const Viewport: React.FC<ViewportProps> = ({
 
     </div>
   );
+  const planeEditor=(plane:ImagePlane,config:PaneConfig,secondaryId?:string)=><ProjectedEditor {...{series,plane,config,secondaryId,studies,registrationState,rois,activeRoi,activeTool,brushRadiusMm,contourDrawMode,windowCenter,windowWidth,onWindowChange,onBrushRadiusChange,onActiveToolChange,huConstraintEnabled,huConstraintMin,huConstraintMax,keyboardDisabled,onUpdateRoiMasks}} onEditorActivate={canvas=>{focusedEditor.current=canvas;onEditorActivate?.(canvas);}} crosshairsVisible={showCrosshairs} coordinates={mprCoords} onNavigate={handleNavigateCoordinates}/>;
+  if(embedded)return <div className="flex flex-col flex-1 min-h-0 min-w-0">{axialPanel}{activeTool==='polygon' && polygonPoints.length>0 && <div className="flex gap-2 text-xs p-1 bg-zinc-950"><button disabled={polygonPoints.length<3} onClick={finishPolygon}>{tr('Finalizar (Enter)')}</button><button onClick={cancelPolygon}>{tr('Cancelar (Esc)')}</button></div>}</div>;
   return (
     <div 
       ref={containerRef} 
@@ -1940,7 +1975,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         <span>{({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),zoom:tr("Zoom"),window:tr("Ventana"),ruler:tr("Regla")})[activeTool]}</span>
         {["brush","eraser","pencil"].includes(activeTool) && <label className={brushHudInfo.visible?'text-sky-300':'text-zinc-300'} title={tr("Radio físico del pincel. Mayús + rueda para ajustar.")}>{" "}{tr("Radio")}{" "}<input aria-label={tr("Radio del pincel")} type="number" min="0.5" max="50" step="0.5" className="w-16 bg-zinc-800 rounded px-1" value={brushRadiusMm} onChange={e=>{const v=Number(e.target.value);if(Number.isFinite(v) && v>=.5 && v<=50)onBrushRadiusChange?.(v);}}/>{" "}{tr("mm")}{" "}</label>}
         {["brush","pencil","polygon"].includes(activeTool) && <select aria-label={tr("Modo de contorno")} className="bg-zinc-800 rounded p-1" value={contourDrawMode} onChange={e=>onContourDrawModeChange?.(e.target.value as ContourDrawMode)}><option value="closed">{" "}{tr("Cerrado")}{" "}</option><option value="open">{" "}{tr("Abierto")}{" "}</option></select>}
-        <div className="flex items-center gap-2 ml-auto"><span title={tr("Ancho y centro de ventana")}>{" "}{tr("W")}{" "}{windowWidth}{" "}{tr("· L")}{" "}{windowCenter}</span><span className="text-zinc-400">{tr("Axial")}</span><button title={tr("Alejar")} onClick={()=>setZoom(v=>Math.max(.1,v/1.25))}>−</button><span>{zoom.toFixed(1)}{" "}{tr("×")}{" "}</span><button title={tr("Acercar")} onClick={()=>setZoom(v=>Math.min(6,v*1.25))}>+</button><button onClick={handleResetView}>{" "}{tr("Ajustar")}{" "}</button></div>
+        <div className="flex items-center gap-2 ml-auto"><span title={tr("Ancho y centro de ventana")}>{" "}{tr("W")}{" "}{windowWidth}{" "}{tr("· L")}{" "}{windowCenter}</span><span className="text-zinc-400">{tr(mprViewMode==='axial'?'Axial':'Panel activo')}</span><button title={tr("Alejar")} onClick={()=>viewCommand('out')}>−</button><span>{mprViewMode==='axial'?`${zoom.toFixed(1)} ×`:''}{" "}</span><button title={tr("Acercar")} onClick={()=>viewCommand('in')}>+</button><button onClick={()=>viewCommand('fit')}>{" "}{tr("Ajustar")}{" "}</button></div>
         {registrationState?.active && <div className="flex items-center gap-2"><button onClick={onOpenRegistrationModal}>{" "}{tr("Fusión ·")}{" "}{series?.modality} + {studies.find(s=>s.id===registrationState.secondaryStudyId)?.modality}</button><input aria-label={tr("Opacidad de fusión")} type="range" min="0" max="1" step=".05" className="w-20" value={registrationState.fusionOpacity} onChange={e=>onFusionOpacityChange?.(Number(e.target.value))}/></div>}
       </div>
       {/* Polygon in-progress Action Bar */}
@@ -1970,10 +2005,10 @@ export const Viewport: React.FC<ViewportProps> = ({
 
       {/* Mount only visible panels: inactive 3D renderers and workers are disposed. */}
       <div className="flex-1 min-h-0 relative w-full overflow-hidden flex">
-        {mprViewMode==='coronal' || mprViewMode==='sagittal'?<MprOrthogonalView onActivate={setDetailPlane} plane={mprViewMode} series={series} coordinates={mprCoords} onNavigateCoordinates={handleNavigateCoordinates} windowCenter={windowCenter} windowWidth={windowWidth} rois={rois} showRois activeRoiId={activeRoi?.id} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} isMaximized onMaximize={()=>setMprViewMode('triplanar')}/>:mprViewMode==='axial'?axialPanel:
+        {mprViewMode==='coronal' || mprViewMode==='sagittal'?planeEditor(mprViewMode,{plane:mprViewMode,mode:'reference'}):mprViewMode==='axial'?axialPanel:
         <div ref={workspaceRef} data-testid="multi-layout" className="relative grid flex-1 min-w-0 min-h-0 gap-1 p-1 bg-zinc-950" style={{gridTemplateColumns:mprViewMode==='oneplus2'?`minmax(0,${split}fr) 6px minmax(0,${100-split}fr)`:'repeat(2,minmax(0,1fr))',gridTemplateRows:'repeat(2,minmax(0,1fr))'}}>
           {paneConfigs.slice(0,mprViewMode==='oneplus2'?3:4).map((config,index)=><div key={index} className="flex flex-col min-w-0 min-h-0" style={mprViewMode==='oneplus2'?index===0?{gridColumn:1,gridRow:'1 / 3'}:{gridColumn:3,gridRow:index}:undefined}>
-            <ConfigurablePane index={index} config={config} onChange={value=>setPaneConfigs(p=>p.map((c,i)=>i===index?value:c))} series={series} studies={studies} coordinates={mprCoords} onNavigate={handleNavigateCoordinates} rois={rois} activeRoiId={activeRoi?.id} registration={registrationState} windowCenter={windowCenter} windowWidth={windowWidth} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} detailPlane={detailPlane} onActivate={setDetailPlane} controls={mprControls} editor={index===editorIndex?axialPanel:undefined}/>
+            <Detachable id={`pane-${index}`} title={tr('Panel principal')} enabled={index===0 && mprViewMode==='oneplus2'}><ConfigurablePane renderEditor={planeEditor} index={index} config={config} onChange={value=>setPaneConfigs(p=>p.map((c,i)=>i===index?value:c))} series={series} studies={studies} coordinates={mprCoords} onNavigate={handleNavigateCoordinates} rois={rois} activeRoiId={activeRoi?.id} registration={registrationState} windowCenter={windowCenter} windowWidth={windowWidth} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} detailPlane={detailPlane} onActivate={setDetailPlane} controls={mprControls} /></Detachable>
           </div>)}
           {mprViewMode==='oneplus2' && <div role="separator" aria-label={tr('Distribución de paneles')} aria-orientation="vertical" aria-valuenow={Math.round(split)} aria-valuemin={25} aria-valuemax={80} tabIndex={0} className="bg-zinc-700 hover:bg-blue-500 cursor-col-resize touch-none rounded" style={{gridColumn:2,gridRow:'1 / 3'}} onDoubleClick={()=>setSplit(65)} onKeyDown={e=>{if(e.key==='ArrowLeft' || e.key==='ArrowRight'){e.preventDefault();setSplit(v=>Math.max(25,Math.min(80,v+(e.key==='ArrowLeft'?-2:2))));}}} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const r=workspaceRef.current!.getBoundingClientRect();setSplit(Math.max(25,Math.min(80,100*(e.clientX-r.left)/r.width)));}}} onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}/>}
         </div>}
@@ -2037,3 +2072,21 @@ export const Viewport: React.FC<ViewportProps> = ({
     </div>
   );
 };
+
+
+/** Project the reference labelmap onto an editable plane; never edit resampled secondary voxels. */
+function ProjectedEditor(props:Omit<ViewportProps,'currentSliceIndex'|'onSliceChange'|'onUpdateRoiMask'> & {plane:ImagePlane;config:PaneConfig;secondaryId?:string;coordinates:MprCoordinates;onNavigate:(p:Partial<MprCoordinates>)=>void}) {
+ const {series,plane,coordinates,config,rois,activeRoi,onNavigate,onUpdateRoiMasks}=props;
+ const fitKey=useMemo(()=>({series,plane}),[series,plane]);
+ const slice=useMemo(()=>series?referencePlane(series,coordinates,plane):undefined,[series,plane,coordinates]);
+ const projectedSeries=useMemo(()=>series&&slice?{...series,slices:[slice]}:null,[series,slice]);
+ const projectedRois=useMemo(()=>series?rois.map(r=>({...r,sliceMasks:{0:planeMask(series,coordinates,plane,r)||new Uint8Array(slice!.rows*slice!.cols)}})):[],[series,rois,coordinates,plane,slice]);
+ const key=plane==='axial'?'z':plane==='coronal'?'y':'x';
+ const scroll=(step:number)=>{if(!series)return;const limit=key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols;onNavigate({[key]:Math.max(0,Math.min(limit-1,coordinates[key]+step))});};
+ const navigate=(u:number,v:number)=>{if(!series||!slice)return;const x=Math.max(0,Math.min(slice.cols-1,Math.floor(u))),y=Math.max(0,Math.min(slice.rows-1,Math.floor(v)));onNavigate(plane==='axial'?{x,y}:plane==='coronal'?{x,z:series.slices.length-1-y}:{y:x,z:series.slices.length-1-y});};
+ const commit=(id:string,_z:number,mask:Uint8Array)=>{const roi=rois.find(r=>r.id===id);if(!series||!roi||roi.locked||props.keyboardDisabled)return;const updates=writePlaneMask(series,coordinates,plane,roi,mask);if(Object.keys(updates).length)onUpdateRoiMasks?.(id,updates);};
+ if(config.mode==='compare')return <div className="flex flex-1 min-h-0 min-w-0">{['reference','secondary'].map(mode=><div key={mode} className="flex flex-1 min-h-0 min-w-0"><ProjectedEditor {...props} config={{...config,mode}}/></div>)}</div>;
+ const secondary=props.studies?.find(s=>s.id===props.secondaryId);
+ const registration=props.registrationState?{...props.registrationState,active:config.mode!=='reference'&&!!secondary,showVoiOverlay:false,secondaryStudyId:secondary?.id||props.registrationState.secondaryStudyId,fusionMode:config.mode==='secondary'?'blend':config.mode as RegistrationState['fusionMode'],fusionOpacity:config.mode==='secondary'?1:props.registrationState.fusionOpacity,...(secondary && secondary.id!==props.registrationState.secondaryStudyId?secondaryDisplay(secondary):{})}:undefined;
+ return <Viewport {...props} embedded secondaryOnly={config.mode==='secondary'} planeLabel={plane} fitIdentity={fitKey} planeIndexLabel={`${coordinates[key]+1}/${!series?0:key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols}`} crosshairPosition={plane==='axial'?{x:coordinates.x,y:coordinates.y}:plane==='coronal'?{x:coordinates.x,y:(series?.slices.length||1)-1-coordinates.z}:{x:coordinates.y,y:(series?.slices.length||1)-1-coordinates.z}} series={projectedSeries} rois={projectedRois} activeRoi={projectedRois.find(r=>r.id===activeRoi?.id)||null} currentSliceIndex={0} onSliceChange={()=>{}} onPlaneScroll={scroll} onPlaneNavigate={navigate} onUpdateRoiMask={commit} registrationState={registration}/>;
+}

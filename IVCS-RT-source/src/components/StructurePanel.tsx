@@ -53,6 +53,7 @@ import { ToolsPanelSection } from './ToolsPanelSection';
 import { AsymmetricMarginInputs } from './AsymmetricMarginInputs';
 
 interface StructurePanelProps {
+  onOpenCleanup?:()=>void;
   workflow?:React.ReactNode;
   onBulkChange?:(r:StructureRoi[])=>void;
   onJump?:(z:number)=>void;
@@ -125,7 +126,7 @@ export type MainTabType = 'tools' | 'structures' | 'operations' | 'stats';
 export type OpSubTabType = 'booleans' | 'margins' | 'interpolation';
 
 export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
-  workflow,onBulkChange,onJump,
+  workflow,onBulkChange,onJump,onOpenCleanup,
   rois,
   activeRoi,
   onSelectRoi,
@@ -648,6 +649,7 @@ export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
       {/* Tab 3: Operations (Boolean, Margins, Interpolation) */}
       {activeTab === 'operations' && (
         <div className="flex-1 flex flex-col overflow-hidden">
+          <button data-testid="open-cleanup" className="m-2 p-2 border border-blue-800 rounded text-sm disabled:opacity-40" disabled={!activeRoi} onClick={onOpenCleanup}>{tr('Suavizado y limpieza 3D')}</button>
           {/* Sub-tab Navigation */}
           <div className="p-3 pb-0">
             <div className="grid grid-cols-3 bg-[#111112] p-1 rounded-lg border border-[#262626]">

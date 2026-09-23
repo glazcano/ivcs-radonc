@@ -14,6 +14,20 @@ The automatic method evaluates eight deterministic coarse starts, then refines s
 
 Registration layout, divider and zoom-link mode persist as preferences. Linked zoom can use relative magnification or equal physical mm per screen pixel. Pan/zoom are view operations, not modifications of image geometry.
 
+## Contouring and workspace
+
+The 1+2 and 2×2 image panes support the shared contour tools in axial, coronal
+and sagittal planes, including registered secondary/fusion displays. Edits are
+stored on the reference grid and a stroke across slices is one undo action.
+The tools/structures panel and main 1+2 panel can be detached into synchronized
+local browser windows. Popup permission is required; closing a popup docks it.
+
+Operations includes physical-radius 3D median, opening/closing, small-component
+removal and enclosed-cavity filling, computed in a cancellable worker. Preview
+shows voxel additions/removals and volume changes; output defaults to a new ROI.
+This is independent binary processing, not joint topology-preserving smoothing.
+See [methods and limitations](EDITING_CLEANUP_20260923.md).
+
 ## Data and performance
 
 Patient/session saving is manual. Preferences may be persisted independently. Contour history shares immutable masks and limits each undo/redo stack to 50 states and 256 MiB of unique buffers; older edits can expire. Image volumes still need to fit in memory. Axial reconstruction is bounded to 4096 per axis and 128 Mi voxels; no silent reduction of source resolution occurs. Preflight estimates include source copies and the working voxel/support arrays, not all browser overhead.

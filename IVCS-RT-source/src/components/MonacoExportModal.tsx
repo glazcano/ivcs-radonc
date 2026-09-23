@@ -4,8 +4,8 @@ import type {DicomSeries,StructureRoi,ImageStudy,RegistrationState} from '../typ
 import {bundleCatalog,buildDicomBundle,BundleCatalog} from '../utils/dicomBundle';
 import {compute} from '../utils/computeClient';
 import {renderSliceToCanvas} from '../utils/registrationEngine';
-export function DifferencePreview({series,original,restored}:{series:DicomSeries;original:StructureRoi;restored:StructureRoi}){
-  const [z,setZ]=useState(0),canvas=useRef<HTMLCanvasElement>(null);
+export function DifferencePreview({series,original,restored,initialSlice=0}:{series:DicomSeries;original:StructureRoi;restored:StructureRoi;initialSlice?:number}){
+  const [z,setZ]=useState(initialSlice),canvas=useRef<HTMLCanvasElement>(null);
   useEffect(()=>{const c=canvas.current,s=series.slices[z];if(!c || !s)return;c.width=s.cols;c.height=s.rows;const ctx=c.getContext('2d')!;ctx.drawImage(renderSliceToCanvas(s,s.windowCenter,s.windowWidth,'grayscale'),0,0);const pixels=ctx.getImageData(0,0,c.width,c.height),a=original.sliceMasks[z],b=restored.sliceMasks[z];for(let i=0;i<c.width*c.height;i++){if(a?.[i] || b?.[i]){const color=a?.[i] && b?.[i]?[0,200,80]:a?.[i]?[255,50,50]:[0,180,255];for(let k=0;k<3;k++)pixels.data[4*i+k]=.4*pixels.data[4*i+k]+.6*color[k];}}ctx.putImageData(pixels,0,0);},[series,original,restored,z]);
   return <div><p className="text-xs">{" "}{tr("Corte")}{" "}{z+1}{" "}{tr("· Verde: coincide · Rojo: perdido · Azul: añadido")}{" "}</p><canvas ref={canvas} style={{aspectRatio:`${series.slices[z].cols*series.slices[z].pixelSpacing[1]} / ${series.slices[z].rows*series.slices[z].pixelSpacing[0]}`}} className="max-h-64 w-auto max-w-full mx-auto"/><input aria-label={tr("Corte de comparación RTSTRUCT")} type="range" min="0" max={series.slices.length-1} value={z} onChange={e=>setZ(Number(e.target.value))} className="w-full"/></div>;
 }

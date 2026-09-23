@@ -11,6 +11,7 @@ export const REVISION_CODE=typeof __IVCS_REVISION__==='string'?__IVCS_REVISION__
 export const PROJECT_CREDITS=typeof __IVCS_CREDITS__!=='undefined'?__IVCS_CREDITS__:[];
 export const REFERENCES=[
   {title:'Klein et al. (2010) — elastix: A Toolbox for Intensity-Based Medical Image Registration',url:'https://elastix.dev/marius/downloads/2010_j_TMI.pdf',use:'Información mutua con estimación suave y selección de métricas; elastix no es una dependencia del programa.'},
+  {title:'3D Slicer — Segment Editor: Smoothing and Islands',url:'https://slicer.readthedocs.io/en/latest/user_guide/modules/segmenteditor.html#smoothing',use:'Referencia metodológica para mediana y morfología binaria 3D; implementación local, sin dependencia de Slicer.'},
   {title:'DICOM PS3.3, C.7.4 — Frame of Reference',url:'https://dicom.nema.org/medical/dicom/2026a/output/chtml/part03/sect_C.7.4.html',use:'Preservación de relaciones espaciales entre series que comparten marco de referencia.'},
   {title:'DICOM PS3.3, C.7.6.2 — Image Plane Module',url:'https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.2.html',use:'Posición, orientación y espaciado para reconstrucción de adquisiciones oblicuas.'},
   {title:'DICOM PS3.3, C.20.2 — Spatial Registration',url:'https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.20.2.html',use:'Exportación del corregistro rígido 3D mediante objetos DICOM REG.'},

@@ -1,3 +1,5 @@
+import {VolumeCleanupModal} from './components/VolumeCleanupModal';
+import {Detachable} from './components/Detachable';
 import {sessionRecords,readSessionFile,saveChunks} from './utils/sessionStream';
 import {trimContourHistory} from './utils/contourHistory';
 import {selectBodyReplacement} from './utils/bodyAlgorithms';
@@ -10,7 +12,7 @@ import {WorkflowTools} from './components/WorkflowTools';
 import { LibraryMenu } from './components/LibraryMenu';
 import { registerStudy, archiveOriginals, openLibraryStudy, libraryIndex, saveRegistrationGroup, LibraryGroup } from './utils/libraryClient';
 import { Session, serializeSession, parseSession, saveSession, loadSession } from './utils/session';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {TemporalReview} from './components/TemporalReview';
 import { Header } from './components/Header';
 import { Viewport } from './components/Viewport';
@@ -62,6 +64,8 @@ export default function App() {
 
   // Coregistration & Multimodal Fusion state
   const [showRegistrationModal, setShowRegistrationModal] = useState<boolean>(false);
+  const activeImageCanvas=useRef<HTMLCanvasElement|null>(null);
+  const [showCleanup,setShowCleanup]=useState(false);
   const [showBodyModal, setShowBodyModal] = useState<boolean>(false);
   const [dicomExportMode,setDicomExportMode]=useState<'rtstruct'|'zip'|'advanced'>('rtstruct');
   const [showMonacoExportModal, setShowMonacoExportModal] = useState<boolean>(false);
@@ -309,6 +313,7 @@ export default function App() {
     const previous = undoStack[undoStack.length - 1];
     setRedoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
     setRois(previous);
+    setActiveRoiId(id=>previous.some(r=>r.id===id)?id:previous[0]?.id || null);
     setUndoStack(prev => prev.slice(0, prev.length - 1));
   };
 
@@ -318,6 +323,7 @@ export default function App() {
     const next = redoStack[redoStack.length - 1];
     setUndoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
     setRois(next);
+    setActiveRoiId(id=>next.some(r=>r.id===id)?id:next[0]?.id || null);
     setRedoStack(prev => prev.slice(0, prev.length - 1));
   };
 
@@ -328,6 +334,7 @@ export default function App() {
     newMask: Uint8Array, 
     _actionName: string
   ) => {
+    if(!rois.some(r=>r.id===roiId&&!r.locked))return;
     pushUndo();
 
     setRois(prev => prev.map(roi => {
@@ -344,6 +351,7 @@ export default function App() {
 
   // Clear contour of active ROI on current slice
   const handleClearCurrentSliceContour = () => {
+    const canvas=activeImageCanvas.current;if(canvas?.isConnected && canvas.dataset.testid?.startsWith('editable-')){canvas.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:'clear'}));return;}
     if (!activeRoi || !series || activeRoi.locked) return;
     const slice = series.slices[currentSliceIndex];
     if (!slice) return;
@@ -805,17 +813,17 @@ export default function App() {
   },[]);
   const temporaryTool=React.useRef<{key:string;tool:ToolType}|null>(null);
   useEffect(()=>{
-    const down=(e:KeyboardEvent)=>{if(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement || e.repeat || e.ctrlKey || e.metaKey || showRegistrationModal || showHelp || showMonacoExportModal || showBodyModal || leaveDialog || isLoading || pointerHeld.current)return;
+    const down=(e:KeyboardEvent)=>{if(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement || e.repeat || e.ctrlKey || e.metaKey || showRegistrationModal || showHelp || showMonacoExportModal || showBodyModal || showCleanup || leaveDialog || isLoading || pointerHeld.current)return;
       if(e.code==='Space' || e.key==='Alt'){e.preventDefault();if(!temporaryTool.current){temporaryTool.current={key:e.code,tool:activeTool};setActiveTool(e.code==='Space'?'pan':'eraser');}}
     };
     const up=(e:KeyboardEvent)=>{if(temporaryTool.current?.key===e.code){setActiveTool(temporaryTool.current.tool);temporaryTool.current=null;}};
     const blur=()=>{if(temporaryTool.current){setActiveTool(temporaryTool.current.tool);temporaryTool.current=null;}};
     window.addEventListener('keydown',down);window.addEventListener('keyup',up);window.addEventListener('blur',blur);return()=>{window.removeEventListener('keydown',down);window.removeEventListener('keyup',up);window.removeEventListener('blur',blur);};
-  },[activeTool,showRegistrationModal,showHelp,showMonacoExportModal,showBodyModal,leaveDialog,isLoading]);
+  },[activeTool,showRegistrationModal,showHelp,showMonacoExportModal,showBodyModal,showCleanup,leaveDialog,isLoading]);
   // Global Keyboard Shortcuts (Tool selection, undo/redo, open/closed contouring toggle)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if(document.querySelector('[role="dialog"]') || isLoading || showHelp || leaveDialog || showRegistrationModal || showMonacoExportModal || showBodyModal)return;
+      if(document.querySelector('[role="dialog"]') || isLoading || showHelp || leaveDialog || showRegistrationModal || showMonacoExportModal || showBodyModal || showCleanup)return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
 
       // Undo / Redo
@@ -848,7 +856,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undoStack, redoStack, shortcuts, showHelp, isLoading, leaveDialog, showRegistrationModal, showMonacoExportModal, showBodyModal]);
+  }, [undoStack, redoStack, shortcuts, showHelp, isLoading, leaveDialog, showRegistrationModal, showMonacoExportModal, showBodyModal, showCleanup]);
 
   return (
     <div 
@@ -896,7 +904,7 @@ export default function App() {
       {/* Center Layout: Viewport + Right Structure Panel */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* Medical Canvas Viewport */}
-        <Viewport onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={showTemporal || isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal}
+        <Viewport onEditorActivate={canvas=>activeImageCanvas.current=canvas} onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={showTemporal || isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal || showCleanup}
           series={series}
           currentSliceIndex={currentSliceIndex}
           onSliceChange={setCurrentSliceIndex}
@@ -915,6 +923,7 @@ export default function App() {
             setCurrentWindowPreset('Personalizado');
           }}
           onUpdateRoiMask={handleUpdateRoiMask}
+          onUpdateRoiMasks={(id,masks)=>{if(!rois.some(r=>r.id===id&&!r.locked))return;pushUndo();setRois(prev=>prev.map(r=>r.id===id?{...r,volumeCm3:undefined,sliceMasks:{...r.sliceMasks,...masks}}:r));}}
           huConstraintEnabled={huConstraintEnabled}
           huConstraintMin={huConstraintMin}
           huConstraintMax={huConstraintMax}
@@ -924,7 +933,7 @@ export default function App() {
         />
 
         {/* Right Panel: Tools, Structure Set, Operations & Stats */}
-        <StructurePanel
+        <div className="flex shrink-0 min-h-0"><Detachable id="tools" title={tr('Herramientas y estructuras')}><div className="flex min-h-0" inert={showCleanup || showBodyModal || showRegistrationModal || showHelp || showMonacoExportModal || !!leaveDialog || isLoading}><StructurePanel onOpenCleanup={()=>{window.focus();setShowCleanup(true);}}
           workflow={<WorkflowTools series={series} rois={rois} active={activeRoi} z={currentSliceIndex} onJump={setCurrentSliceIndex} onChange={next=>{pushUndo();setRois(next);}}/>}
           onBulkChange={next=>{pushUndo();setRois(next);}} onJump={setCurrentSliceIndex}
           rois={rois}
@@ -974,8 +983,8 @@ export default function App() {
           }}
           contourDrawMode={contourDrawMode}
           onChangeContourDrawMode={setContourDrawMode}
-          onFillEnclosedHoles={handleFillEnclosedHoles}
-        />
+          onFillEnclosedHoles={()=>{const canvas=activeImageCanvas.current;if(canvas?.isConnected && canvas.dataset.testid?.startsWith('editable-'))canvas.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:'holes'}));else handleFillEnclosedHoles();}}
+        /></div></Detachable></div>
 
         {/* Loading Overlay */}
         {isLoading && (
@@ -1028,6 +1037,7 @@ export default function App() {
         />
       )}
 
+      {showCleanup && series && activeRoi && <VolumeCleanupModal series={series} roi={activeRoi} onClose={()=>setShowCleanup(false)} onApply={(result,overwrite)=>{if(overwrite && activeRoi.locked)return;pushUndo();setRois(prev=>overwrite?prev.map(r=>r.id===result.id?result:r):[...prev,result]);setActiveRoiId(result.id);setShowCleanup(false);}}/>}
       {/* Automated BODY / External Contour Generator Modal */}
       {showBodyModal && (
         <BodyGeneratorModal
