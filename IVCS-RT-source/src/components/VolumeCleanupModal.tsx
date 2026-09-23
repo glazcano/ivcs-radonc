@@ -1,3 +1,4 @@
+import {maskGeometry,maskScale} from '../utils/segmentationGrid';
 import React,{useEffect,useRef,useState,useMemo} from 'react';
 import type {DicomSeries,StructureRoi} from '../types';
 import type {CleanupInput,CleanupResult} from '../utils/volumeCleanup';
@@ -19,8 +20,8 @@ export function VolumeCleanupModal({series,roi,onClose,onApply}:{series:DicomSer
   const w=new Worker(new URL('../workers/cleanup.worker.ts',import.meta.url),{type:'module'});worker.current=w;
   w.onmessage=({data})=>{if(worker.current!==w)return;if(data.error){setError(data.error);cancel();}else if(data.result){setResult(data.result);cancel();}else setProgress(data.progress);};
   w.onerror=e=>{setError(e.message||tr('No se pudo calcular la limpieza.'));cancel();};
-  const first=series.slices[0],valid:Record<number,Uint8Array>={};series.slices.forEach((s,z)=>{if(s.valid)valid[z]=s.valid;});
-  w.postMessage({cols:first.cols,rows:first.rows,depth:series.slices.length,spacing:[first.pixelSpacing[1],first.pixelSpacing[0],voxelDepth(series.slices,first)],masks:roi.sliceMasks,valid,method,radiusMm:radius,minComponentMm3:minimum*1000,fillHoles:holes} satisfies CleanupInput);
+  const first=maskGeometry(series.slices[0],maskScale(roi)),valid:Record<number,Uint8Array>={};series.slices.forEach((s,z)=>{if(s.valid)valid[z]=s.valid;});
+  w.postMessage({cols:first.cols,rows:first.rows,depth:series.slices.length,spacing:[first.pixelSpacing[1],first.pixelSpacing[0],voxelDepth(series.slices,first)],masks:roi.sliceMasks,valid,validScale:maskScale(roi),method,radiusMm:radius,minComponentMm3:minimum*1000,fillHoles:holes} satisfies CleanupInput);
   } catch(error){setError((error as Error).message);cancel();}
  };
  const firstChanged=useMemo(()=>{

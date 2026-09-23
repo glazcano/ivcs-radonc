@@ -1,3 +1,4 @@
+import {maskScale,nativeMaskIndex} from './segmentationGrid';
 import {bodyMargin, smoothBody, detectBodyTableRow, filterBodyComponents, refineBodyContinuity} from './bodyAlgorithms';
 import {distanceSquared} from './distance';
 import { AsymmetricMargin, BooleanOpType, DicomSeries, DicomSlice, StructureRoi } from '../types';
@@ -450,7 +451,6 @@ function invalidateMask(mask: Uint8Array): void {
   maskBoundingBoxCache.delete(mask);
   maskVoxelCache.delete(mask);
   sliceHuCache.delete(mask);
-  sliceVolumeCache.delete(mask);
   sdfCache.delete(mask);
 }
 
@@ -1186,8 +1186,6 @@ export function generateAsymmetricMargin3D(
 
 // Global WeakMap caches to eliminate redundant 262,144-voxel array iterations
 const maskVoxelCache = new WeakMap<Uint8Array, number>();
-const roiVolumeCache = new WeakMap<StructureRoi, number>();
-const sliceMasksVolumeCache = new WeakMap<StructureRoi['sliceMasks'], number>();
 const contouredSlicesCache = new WeakMap<StructureRoi, number[]>();
 const sliceMasksContouredSlicesCache = new WeakMap<StructureRoi['sliceMasks'], number[]>();
 
@@ -1200,7 +1198,6 @@ interface SliceHuStats {
 const sliceHuCache = new WeakMap<Uint8Array, SliceHuStats>();
 const roiHuStatsCache = new WeakMap<StructureRoi, { minHU: number; maxHU: number; meanHU: number; voxelCount: number; volumeCm3: number }>();
 const sliceMasksHuStatsCache = new WeakMap<StructureRoi['sliceMasks'], { minHU: number; maxHU: number; meanHU: number; voxelCount: number; volumeCm3: number }>();
-const sliceVolumeCache = new WeakMap<Uint8Array, number>();
 const sliceMapCache = new WeakMap<DicomSlice[], Map<number, DicomSlice>>();
 
 /**
@@ -1282,51 +1279,10 @@ export function getMaskVoxelCount(mask: Uint8Array): number {
  * Calculates volume of a structure in cubic centimeters (cm3) with cached voxel counts
  * and per-slice WeakMap caching so that unchanged slices take 0 microseconds
  */
-export function calculateRoiVolumeCm3(
-  roi: StructureRoi,
-  slices: DicomSlice[]
-): number {
-  if (slices.length === 0) return 0;
-
-  const cachedByMasks = sliceMasksVolumeCache.get(roi.sliceMasks);
-  if (cachedByMasks !== undefined) return cachedByMasks;
-
-  const cached = roiVolumeCache.get(roi);
-  if (cached !== undefined) return cached;
-  
-  const sliceMap = getSliceMap(slices);
-  let totalSliceVolume = 0;
-
-  for (const sliceStr in roi.sliceMasks) {
-    const mask = roi.sliceMasks[sliceStr as unknown as number];
-    if (!mask) continue;
-
-    let sliceVol = sliceVolumeCache.get(mask);
-    if (sliceVol === undefined) {
-      const sliceVoxelCount = getMaskVoxelCount(mask);
-      if (sliceVoxelCount === 0) {
-        sliceVol = 0;
-      } else {
-        const sliceIndex = parseInt(sliceStr, 10);
-        const slice = sliceMap.get(sliceIndex);
-        if (slice) {
-          const voxelVolume_mm3 = slice.pixelSpacing[0] * slice.pixelSpacing[1] * voxelDepth(slices, slice);
-          sliceVol = sliceVoxelCount * voxelVolume_mm3;
-        } else {
-          sliceVol = 0;
-        }
-      }
-      sliceVolumeCache.set(mask, sliceVol);
-    }
-
-    totalSliceVolume += sliceVol;
-  }
-
-  // Convert mm3 to cm3 (divide by 1000)
-  const volumeCm3 = totalSliceVolume / 1000.0;
-  roiVolumeCache.set(roi, volumeCm3);
-  sliceMasksVolumeCache.set(roi.sliceMasks, volumeCm3);
-  return volumeCm3;
+export function calculateRoiVolumeCm3(roi:StructureRoi,slices:DicomSlice[]):number {
+ const lookup=getSliceMap(slices),scale=maskScale(roi);let volume=0;
+ for(const [z,mask] of Object.entries(roi.sliceMasks)){const slice=lookup.get(Number(z));if(slice)volume+=getMaskVoxelCount(mask)*slice.pixelSpacing[0]*slice.pixelSpacing[1]*voxelDepth(slices,slice)/(scale*scale*1000);}
+ return volume;
 }
 
 /**
@@ -1369,14 +1325,15 @@ export function calculateRoiHuStats(
       let sMin = Infinity;
       let sMax = -Infinity;
 
-      const bbox = getMaskBoundingBox(mask, slice.rows, slice.cols);
+      const scale=maskScale(roi),cols=slice.cols*scale;
+      const bbox = getMaskBoundingBox(mask, slice.rows*scale, cols);
       if (bbox) {
         for (let r = bbox.minR; r <= bbox.maxR; r++) {
-          const rOffset = r * slice.cols;
+          const rOffset = r * cols;
           for (let c = bbox.minC; c <= bbox.maxC; c++) {
             const idx = rOffset + c;
             if (mask[idx] === 1) {
-              const val = hu[idx];
+              const val = hu[nativeMaskIndex(idx,slice.cols,scale)];
               sCount++;
               sSum += val;
               if (val < sMin) sMin = val;
@@ -1402,7 +1359,7 @@ export function calculateRoiHuStats(
       if (sliceStats.max > max) max = sliceStats.max;
 
       const voxelMm3 = slice.pixelSpacing[0] * slice.pixelSpacing[1] * voxelDepth(slices, slice);
-      volumeMm3 += sliceStats.count * voxelMm3;
+      volumeMm3 += sliceStats.count * voxelMm3 / maskScale(roi)**2;
     }
   }
 

@@ -1,3 +1,5 @@
+import {ApplicationExit} from './components/ApplicationExit';
+import {maskGeometry,maskScale,maskSeries,roiAtScale,rescaleMask,type MaskScale} from './utils/segmentationGrid';
 import {VolumeCleanupModal} from './components/VolumeCleanupModal';
 import {Detachable} from './components/Detachable';
 import {sessionRecords,readSessionFile,saveChunks} from './utils/sessionStream';
@@ -180,16 +182,12 @@ export default function App() {
   const savedContent = React.useRef<{rois:StructureRoi[];registrationState:RegistrationState}|null>(null);
   const saving = React.useRef(false);
   const [isSaving,setIsSaving] = useState(false);
+  const [showExit,setShowExit]=useState(false);
   useEffect(() => {
     if (!sessionReady || !session || isLoading) return;
     pendingSave.current = session.rois !== savedContent.current?.rois || session.registrationState !== savedContent.current?.registrationState;
     if (!saving.current) setSaveStatus(pendingSave.current ? 'Cambios sin guardar' : 'Guardado manual · sin cambios');
   }, [sessionReady, rois, registrationState, isLoading, isSaving]);
-  useEffect(()=> {
-    const guard = (e: BeforeUnloadEvent)=> { if (pendingSave.current || saving.current) { e.preventDefault(); e.returnValue = ''; } };
-    window.addEventListener('beforeunload',guard);
-    return ()=>window.removeEventListener('beforeunload',guard);
-  }, []);
   const flushSession = async () => {
     if (!session || saving.current) return;
     saving.current=true;setIsSaving(true);setSaveStatus(tr("Guardando…"));
@@ -357,7 +355,7 @@ export default function App() {
     if (!slice) return;
 
     pushUndo();
-    const empty = createEmptyMask(slice.rows, slice.cols);
+    const empty = createEmptyMask(slice.rows*maskScale(activeRoi), slice.cols*maskScale(activeRoi));
     setRois(prev => prev.map(roi => {
       if (roi.id !== activeRoi.id) return roi;
       return {
@@ -372,6 +370,7 @@ export default function App() {
 
   // Fill enclosed holes / interior of active ROI on current slice
   const handleFillEnclosedHoles = () => {
+    const canvas=activeImageCanvas.current;if(canvas?.isConnected){canvas.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:'holes'}));return;}
     if (!activeRoi || !series || activeRoi.locked) return;
     const slice = series.slices[currentSliceIndex];
     if (!slice) return;
@@ -380,7 +379,7 @@ export default function App() {
     if (!currentMask) return;
 
     pushUndo();
-    const filledMask = fillEnclosedHolesOnMask(currentMask, slice.rows, slice.cols);
+    const filledMask = fillEnclosedHolesOnMask(currentMask, slice.rows*maskScale(activeRoi), slice.cols*maskScale(activeRoi));
     setRois(prev => prev.map(roi => {
       if (roi.id !== activeRoi.id) return roi;
       return {
@@ -461,7 +460,7 @@ export default function App() {
       visible: true,
       locked: false,
       opacity: 0.40,
-      sliceMasks: {}
+      maskScale:2, sliceMasks: {}
     };
 
     setRois(prev => [...prev, newRoi]);
@@ -484,9 +483,13 @@ export default function App() {
     setIsLoading(true);setLoadingMessage(tr("Calculando contornos…"));operationAbort.current=new AbortController();
     try {
     if (!series) return;
-    const roiA = rois.find(r => r.id === sourceRoiAId);
-    const roiB = rois.find(r => r.id === sourceRoiBId);
+    let roiA = rois.find(r => r.id === sourceRoiAId);
+    let roiB = rois.find(r => r.id === sourceRoiBId);
     if (!roiA || !roiB) return;
+    if(targetOption==='overwrite_a' && roiA.locked)throw new Error('La estructura está bloqueada.');
+    const scale=Math.max(maskScale(roiA),maskScale(roiB)) as MaskScale;
+    roiA=roiAtScale(roiA,series,scale);roiB=roiAtScale(roiB,series,scale);
+    const grid=maskSeries(series,scale);
 
     pushUndo();
 
@@ -498,7 +501,7 @@ export default function App() {
       : {};
 
     if (scope === 'slice') {
-      const slice = series.slices[currentSliceIndex];
+      const slice = grid.slices[currentSliceIndex];
       if (slice) {
         const sIdx = slice.sliceIndex;
         let maskA = roiA.sliceMasks[sIdx] || createEmptyMask(slice.rows, slice.cols);
@@ -517,14 +520,14 @@ export default function App() {
     } else {
       // 3D Series
       const volumeA = (hasMarginA && marginA)
-        ? await compute('generateAsymmetricMargin3D',[{...series,slices:series.slices.map(s=>({...s,huData:new Int16Array(0)}))}, roiA.sliceMasks, marginA],{signal:operationAbort.current?.signal})
+        ? await compute('generateAsymmetricMargin3D',[grid, roiA.sliceMasks, marginA],{signal:operationAbort.current?.signal})
         : roiA.sliceMasks;
 
       const volumeB = (hasMarginB && marginB)
-        ? await compute('generateAsymmetricMargin3D',[{...series,slices:series.slices.map(s=>({...s,huData:new Int16Array(0)}))}, roiB.sliceMasks, marginB],{signal:operationAbort.current?.signal})
+        ? await compute('generateAsymmetricMargin3D',[grid, roiB.sliceMasks, marginB],{signal:operationAbort.current?.signal})
         : roiB.sliceMasks;
 
-      for (const slice of series.slices) {
+      for (const slice of grid.slices) {
         const sIdx = slice.sliceIndex;
         const maskA = volumeA[sIdx] || createEmptyMask(slice.rows, slice.cols);
         const maskB = volumeB[sIdx] || createEmptyMask(slice.rows, slice.cols);
@@ -543,12 +546,12 @@ export default function App() {
         visible: true,
         locked: false,
         opacity: 0.45,
-        sliceMasks: targetMasks
+        maskScale:scale, volumeCm3:undefined, sliceMasks: targetMasks
       };
       setRois(prev => [...prev, newRoi]);
       setActiveRoiId(newRoi.id);
     } else {
-      setRois(prev => prev.map(r => r.id === sourceRoiAId ? { ...r, sliceMasks: targetMasks } : r));
+      setRois(prev => prev.map(r => r.id === sourceRoiAId ? { ...r, maskScale:scale, volumeCm3:undefined, sliceMasks: targetMasks } : r));
     }
     } catch(e){setErrorMessage((e as Error).message);}finally{setIsLoading(false);operationAbort.current=null;}
   };
@@ -567,6 +570,7 @@ export default function App() {
     if (!series) return;
     const srcRoi = rois.find(r => r.id === sourceRoiId);
     if (!srcRoi) return;
+    const grid=maskSeries(series,maskScale(srcRoi));
 
     if(targetOption==='overwrite' && srcRoi.locked)throw new Error('La estructura está bloqueada.');
 
@@ -575,7 +579,7 @@ export default function App() {
       : {};
 
     if (scope === 'slice') {
-      const slice = series.slices[currentSliceIndex];
+      const slice = grid.slices[currentSliceIndex];
       if (slice) {
         const sIdx = slice.sliceIndex;
         const srcMask = srcRoi.sliceMasks[sIdx] || createEmptyMask(slice.rows, slice.cols);
@@ -590,14 +594,14 @@ export default function App() {
       }
     } else {
       // 3D Series
-      const margin3dResult = await compute<Record<number,Uint8Array>>('generateAsymmetricMargin3D',[{...series,slices:series.slices.map(s=>({...s,huData:new Int16Array(0)}))}, srcRoi.sliceMasks, margin],{signal:operationAbort.current?.signal});
+      const margin3dResult = await compute<Record<number,Uint8Array>>('generateAsymmetricMargin3D',[grid, srcRoi.sliceMasks, margin],{signal:operationAbort.current?.signal});
       for (const [sIdxStr, m] of Object.entries(margin3dResult)) {
         targetMasks[Number(sIdxStr)] = m;
       }
     }
 
     pushUndo();
-    if(Object.entries(targetMasks).some(([z,m])=>{const sl=series.slices[Number(z)];return sl && m.some((v,i)=>v && (i<sl.cols || i>=m.length-sl.cols || i%sl.cols===0 || i%sl.cols===sl.cols-1 || (scope==='series' && (Number(z)===0 || Number(z)===series.slices.length-1))));}))setErrorMessage(tr("El resultado alcanza el borde del volumen. Revise si el campo de imagen limita el margen."));
+    if(Object.entries(targetMasks).some(([z,m])=>{const sl=grid.slices[Number(z)];return sl && m.some((v,i)=>v && (i<sl.cols || i>=m.length-sl.cols || i%sl.cols===0 || i%sl.cols===sl.cols-1 || (scope==='series' && (Number(z)===0 || Number(z)===grid.slices.length-1))));}))setErrorMessage(tr("El resultado alcanza el borde del volumen. Revise si el campo de imagen limita el margen."));
     if (targetOption === 'new') {
       const newRoi: StructureRoi = {
         id: `roi-${Date.now()}`,
@@ -607,12 +611,12 @@ export default function App() {
         visible: true,
         locked: false,
         opacity: 0.45,
-        sliceMasks: targetMasks
+        maskScale:maskScale(srcRoi), volumeCm3:undefined, sliceMasks: targetMasks
       };
       setRois(prev => [...prev, newRoi]);
       setActiveRoiId(newRoi.id);
     } else {
-      setRois(prev => prev.map(r => r.id === sourceRoiId ? { ...r, sliceMasks: targetMasks } : r));
+      setRois(prev => prev.map(r => r.id === sourceRoiId ? { ...r, maskScale:maskScale(srcRoi), volumeCm3:undefined, sliceMasks: targetMasks } : r));
     }
     } catch(e){setErrorMessage((e as Error).message);}finally{setIsLoading(false);operationAbort.current=null;}
   };
@@ -630,7 +634,7 @@ export default function App() {
     }
 
     try {
-      const slice0 = series.slices[0];
+      const slice0 = maskGeometry(series.slices[0],maskScale(targetRoi));
       const { updatedRoi, interpolatedSlices } = await compute('interpolateContourGaps',[
         targetRoi,
         slice0.rows,
@@ -664,7 +668,7 @@ export default function App() {
     }
 
     try {
-      const slice0 = series.slices[0];
+      const slice0 = maskGeometry(series.slices[0],maskScale(targetRoi));
       const { updatedRoi, interpolatedSlices } = await compute('interpolateContourRange',[
         targetRoi,
         startSlice,
@@ -694,6 +698,8 @@ export default function App() {
     sliceMasks: { [sliceIndex: number]: Uint8Array },
     preserveExisting = true
   ) => {
+    const scale=targetMode==='new'?2:maskScale(rois.find(r=>r.id===targetRoiId));
+    if(series && scale===2)sliceMasks=Object.fromEntries(Object.entries(sliceMasks).map(([z,m])=>{const sl=series.slices[Number(z)];return [z,rescaleMask(m,sl.rows,sl.cols,1,2)];}));
     if (targetMode === 'overwrite') {
       sliceMasks = selectBodyReplacement(rois.find(r => r.id === targetRoiId), sliceMasks, preserveExisting);
     }
@@ -709,7 +715,7 @@ export default function App() {
         visible: true,
         locked: false,
         opacity: 0.35,
-        sliceMasks: sliceMasks
+        maskScale:scale, sliceMasks: sliceMasks
       };
       setRois(prev => [newRoi, ...prev]);
       setActiveRoiId(newRoi.id);
@@ -879,8 +885,9 @@ export default function App() {
       )}
 
       {leaveDialog && <div className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center"><section role="dialog" aria-label={tr("Cambios sin guardar")} className="bg-zinc-900 text-zinc-200 rounded border border-zinc-600 p-6"><h2>{" "}{tr("Hay cambios sin guardar")}{" "}</h2><p className="text-sm my-3">{" "}{tr("¿Cómo desea continuar antes de abrir otro caso?")}{" "}</p><div className="flex gap-3">{[["save",tr("Guardar y continuar")],["discard",tr("Descartar")],["cancel",tr("Cancelar")]].map(([id,label])=><button key={id} className="px-3 py-2 bg-zinc-700 rounded" onClick={()=>{leaveDialog.resolve(id);setLeaveDialog(null);}}>{label}</button>)}</div></section></div>}
+      <ApplicationExit dirty={()=>pendingSave.current} busy={!sessionReady||isLoading||isSaving||!!leaveDialog||showRegistrationModal||showMonacoExportModal||showBodyModal||showCleanup||showTemporal} save={flushSession} onDialogChange={setShowExit}/>
       {/* Top Header */}
-      <Header activeRoiName={rois.find(r=>r.id===activeRoiId)?.name}
+      <Header onExit={()=>window.dispatchEvent(new Event('ivcs-exit-request'))} activeRoiName={rois.find(r=>r.id===activeRoiId)?.name}
         library={<><LibraryMenu busy={isLoading || !sessionReady} onOpen={handleOpenLibrary} /><button disabled={!series || isLoading} className="px-2 py-1.5 border border-zinc-600 rounded text-xs disabled:opacity-40" onClick={()=>setShowTemporal(true)}>{tr("Revisión 4D")}</button></>}
         series={series}
         currentSliceIndex={currentSliceIndex}
@@ -904,7 +911,7 @@ export default function App() {
       {/* Center Layout: Viewport + Right Structure Panel */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* Medical Canvas Viewport */}
-        <Viewport onEditorActivate={canvas=>activeImageCanvas.current=canvas} onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={showTemporal || isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal || showCleanup}
+        <Viewport onEditorActivate={canvas=>activeImageCanvas.current=canvas} onContourDrawModeChange={setContourDrawMode} onFusionOpacityChange={value=>setRegistrationState(p=>({...p,fusionOpacity:value}))} keyboardDisabled={showExit || showTemporal || isLoading || !!leaveDialog || showHelp || showRegistrationModal || showMonacoExportModal || showBodyModal || showCleanup}
           series={series}
           currentSliceIndex={currentSliceIndex}
           onSliceChange={setCurrentSliceIndex}
@@ -933,7 +940,7 @@ export default function App() {
         />
 
         {/* Right Panel: Tools, Structure Set, Operations & Stats */}
-        <div className="flex shrink-0 min-h-0"><Detachable id="tools" title={tr('Herramientas y estructuras')}><div className="flex min-h-0" inert={showCleanup || showBodyModal || showRegistrationModal || showHelp || showMonacoExportModal || !!leaveDialog || isLoading}><StructurePanel onOpenCleanup={()=>{window.focus();setShowCleanup(true);}}
+        <div className="flex shrink-0 min-h-0"><Detachable id="tools" title={tr('Herramientas y estructuras')}><div className="flex min-h-0" inert={showExit || showCleanup || showBodyModal || showRegistrationModal || showHelp || showMonacoExportModal || !!leaveDialog || isLoading}><StructurePanel onOpenCleanup={()=>{window.focus();setShowCleanup(true);}}
           workflow={<WorkflowTools series={series} rois={rois} active={activeRoi} z={currentSliceIndex} onJump={setCurrentSliceIndex} onChange={next=>{pushUndo();setRois(next);}}/>}
           onBulkChange={next=>{pushUndo();setRois(next);}} onJump={setCurrentSliceIndex}
           rois={rois}

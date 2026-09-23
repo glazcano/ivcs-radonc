@@ -10,8 +10,8 @@ export function Detachable({children, title, id, enabled=true}: {children:React.
   const dock=()=>{const w=child.current;child.current=null;setTarget(null);w?.close();};
   useEffect(()=>{
     const close=()=>child.current?.close();
-    window.addEventListener('pagehide',close);
-    return()=>{window.removeEventListener('pagehide',close);close();};
+    window.addEventListener('pagehide',close);window.addEventListener('ivcs-shutdown-complete',close);
+    return()=>{window.removeEventListener('pagehide',close);window.removeEventListener('ivcs-shutdown-complete',close);close();};
   },[]);
   useEffect(()=>{if(!enabled)dock();},[enabled]);
   const detach=()=>{

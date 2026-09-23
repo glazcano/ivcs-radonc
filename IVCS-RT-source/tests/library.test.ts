@@ -127,3 +127,12 @@ test('linked registration group updates commit atomically and preserve detach ch
  await assert.rejects(()=>library.group({referenceKey:a.key,entries:[{secondaryKey:b.key,transform:{...t,translationX:99}},{secondaryKey:'missing',transform:t}]}));
  assert.deepEqual((await library.list()).patients[0].groups[0],before);
 }));
+
+test('high resolution library masks retain scale and compressed bytes across metadata-only saves',()=>withLibrary(async(library,root)=>{
+ const image=study('SYNTHETIC-2X','2.25.200'),{key}=await library.putStudy(image),mask=new Uint8Array(16);mask[5]=1;
+ const roi={id:'hr',name:'HR',maskScale:2,sliceMasks:{0:mask}};
+ const encoded=JSON.parse(encodeLibrary({rois:[roi]})),first=await library.save({key,studyKeys:[key],expectedRevision:null,state:encoded});
+ const dir=path.join(root,'s',key.slice(0,24),'masks'),files=await fs.readdir(dir),before=await fs.readFile(path.join(dir,files[0]));
+ await library.save({key,studyKeys:[key],expectedRevision:first.revision,state:{rois:[{...roi,name:'Renamed HR',sliceMasks:{0:{unchanged:true}}}]}});
+ const restored=decodeLibrary(JSON.stringify((await library.open(key)).state));assert.equal(restored.rois[0].maskScale,2);assert.deepEqual(restored.rois[0].sliceMasks[0],mask);assert.deepEqual(await fs.readFile(path.join(dir,files[0])),before);assert.equal((await fs.readdir(dir)).length,1);
+}));

@@ -8,7 +8,10 @@ import hashlib,json,shutil,sys,tarfile,zipfile,re,os
 root=Path(__file__).resolve().parent.parent
 revision=sys.argv[1] if len(sys.argv)>1 else ''
 if not re.fullmatch(r'\d{8}',revision):raise SystemExit('Pass an eight-digit revision date')
-out=root/'releases'/f'{revision}-consolidation'
+label=sys.argv[2] if len(sys.argv)>2 else ''
+if label and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*',label):raise SystemExit('Invalid release label')
+build_id=f'{revision}-{label}' if label else revision
+out=root/'releases'/(build_id if label else f'{revision}-consolidation')
 if out.exists():raise SystemExit('Destination exists; refusing to mix builds')
 cache=root/'build/release-cache'
 lock=json.loads((root/'scripts/nodeRuntime.json').read_text())
@@ -24,7 +27,7 @@ for platform in ['win-x64','darwin-arm64','darwin-x64','linux-x64','linux-arm64'
     archives.append((platform,name,archive))
 out.mkdir(parents=True)
 for platform,name,archive in archives:
-    target=out/f'IVCS-RT-{revision}-{platform}';target.mkdir()
+    target=out/f'IVCS-RT-{build_id}-{platform}';target.mkdir()
     shutil.copytree(root/'dist',target/'dist');shutil.copytree(root/'translations',target/'translations')
     shutil.copytree(demo/'data',target/'data')
     shutil.copytree(root/'docs',target/'docs')
@@ -49,5 +52,5 @@ for platform,name,archive in archives:
             f=target/(label+('.command' if platform.startswith('darwin') else '.sh'))
             f.write_bytes(('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\nexec ./runtime/node ./launcher.mjs'+arg+'\n').encode('utf8'));f.chmod(0o755)
     (target/'release.json').write_text(json.dumps({'revision':revision,'platform':platform,'runtime':version,'runtimeSHA256':checks[name],'nativeExecutionTested':False,'syntheticOnly':True},indent=2))
-    (target/'README.txt').write_text(f'IVCS RT — {revision}\nUse Start to open and Stop to close. All patient data is local in data/. Save manually before closing.\nOnly a synthetic demo is included. To migrate, stop both copies and copy the entire old data folder, keeping a backup.\nSee docs/CURRENT_STATUS.md for supported features, limitations and external validation still pending.\nMIT — Gabriel Lazcano.\n',encoding='utf8')
+    (target/'README.txt').write_text(f'IVCS RT — {revision}\nUse Start to open. Use Close application inside IVCS RT to save and stop the server; Stop remains available as a fallback. Closing the browser tab alone does not stop Node or save changes. All patient data is local in data/.\nOnly a synthetic demo is included. To migrate, stop both copies and copy the entire old data folder, keeping a backup.\nSee docs/CURRENT_STATUS.md for supported features, limitations and external validation still pending.\nMIT — Gabriel Lazcano.\n',encoding='utf8')
 print(out)

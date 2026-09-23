@@ -1,3 +1,4 @@
+import {maskGeometry,maskScale} from '../utils/segmentationGrid';
 import React,{useEffect,useRef,useState} from 'react';
 import * as THREE from 'three';
 import {TrackballControls} from 'three/addons/controls/TrackballControls.js';
@@ -35,7 +36,7 @@ export default function Contours3D({series,rois,activeRoiId}:{series:DicomSeries
     if(!state.hasFit && state.meshes.children.length){state.fit();state.hasFit=true;}state.invalidate();worker?.terminate();
    };
    worker.onerror=e=>{setBusy(false);setError(e.message);worker?.terminate();};
-   worker.postMessage({geometry:{cols:s.cols,rows:s.rows,depth:series.slices.length,spacing:[s.pixelSpacing[1],s.pixelSpacing[0],voxelDepth(series.slices,s)],origin:s.imagePositionPatient},items:relevant.map(r=>({id:r.id,masks:r.sliceMasks}))});
+   worker.postMessage({geometry:{cols:s.cols,rows:s.rows,depth:series.slices.length,spacing:[s.pixelSpacing[1],s.pixelSpacing[0],voxelDepth(series.slices,s)],origin:s.imagePositionPatient},items:relevant.map(r=>{const g=maskGeometry(s,maskScale(r));return {id:r.id,masks:r.sliceMasks,geometry:{cols:g.cols,rows:g.rows,spacing:[g.pixelSpacing[1],g.pixelSpacing[0],voxelDepth(series.slices,s)],origin:g.imagePositionPatient}};})});
   },200);
   return()=>{cancelled=true;clearTimeout(timer);worker?.terminate();};
  },[series,rois,onlyActive,activeRoiId,visible]);

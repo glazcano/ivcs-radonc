@@ -2,6 +2,7 @@ import {tr} from '../i18n';
 import React,{useRef,useState} from 'react';
 import {DicomSeries,StructureRoi} from '../types';
 interface HeaderProps {
+  onExit:()=>void;
   activeRoiName?:string;
   library?: React.ReactNode;
   series: DicomSeries | null;
@@ -34,5 +35,6 @@ export const Header:React.FC<HeaderProps> = props=>{
     <div className="relative"><button id="btn-export-menu" className={button} onClick={()=>{setExports(!exports);setMenu(false);}}>{" "}{tr("Exportar RT")}{" "}</button>{exports && <div className="absolute right-0 top-full mt-2 w-60 bg-zinc-900 border border-zinc-600 p-2 rounded z-50 flex flex-col gap-1"><button id="btn-export-monaco" className={button} onClick={()=>{props.onOpenMonacoExportModal?.();setExports(false);}}>{" "}{tr("TPS RTSTRUCT")}{" "}</button><button id="btn-export-dicom-zip" className={button} disabled={!series} onClick={()=>{props.onOpenDicomZip?.(false);setExports(false);}}>{tr('DICOM .zip')}</button><button id="btn-export-dicom-zip-advanced" className={button} disabled={!series} onClick={()=>{props.onOpenDicomZip?.(true);setExports(false);}}>{tr('DICOM .zip avanzado')}</button><button id="btn-export-json" className={button} onClick={()=>{props.onExportRoisJson();setExports(false);}}>{" "}{tr("Guardar sesión portable")}{" "}</button><button id="btn-export-csv" className={button} onClick={()=>{props.onExportCsvReport();setExports(false);}}>{" "}{tr("Reporte volumétrico CSV")}{" "}</button></div>}</div>
     <input ref={json} type="file" accept=".json,.ivcs" className="hidden" onChange={e=>{const f=e.target.files?.[0];if(f)props.onOpenSession(f);e.target.value='';}}/><input ref={dicom} type="file" accept=".dcm,.zip" multiple className="hidden" onChange={e=>{if(e.target.files?.length)props.onFilesSelected(Array.from(e.target.files));e.target.value='';}}/>
     <div className="relative"><button className={button} onClick={()=>{setMenu(!menu);setExports(false);}}>{" "}{tr("Archivo y ayuda")}{" "}</button>{menu && <div className="absolute right-0 top-full mt-2 w-52 bg-zinc-900 border border-zinc-600 p-2 rounded z-50 flex flex-col gap-1"><button id="btn-open-dicom" className={button} disabled={!sessionReady} onClick={()=>{dicom.current?.click();setMenu(false);}}>{" "}{tr("Abrir DICOM / ZIP")}{" "}</button><button className={button} disabled={!sessionReady} onClick={()=>{json.current?.click();setMenu(false);}}>{" "}{tr("Abrir sesión")}{" "}</button><button id="btn-show-help" className={button} onClick={()=>{props.onShowHelp();setMenu(false);}}>{" "}{tr("Atajos y ayuda")}{" "}</button></div>}</div>
+    <button id="btn-exit-application" className={button} onClick={props.onExit} title={tr('Guardar y detener el servidor local')}>{tr('Cerrar programa')}</button>
   </header>;
 };

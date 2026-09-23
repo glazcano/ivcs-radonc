@@ -18,7 +18,7 @@ Registration layout, divider and zoom-link mode persist as preferences. Linked z
 
 The 1+2 and 2×2 image panes support the shared contour tools in axial, coronal
 and sagittal planes, including registered secondary/fusion displays. Edits are
-stored on the reference grid and a stroke across slices is one undo action.
+stored on each ROI's segmentation grid and a stroke across slices is one undo action.
 The tools/structures panel and main 1+2 panel can be detached into synchronized
 local browser windows. Popup permission is required; closing a popup docks it.
 
@@ -27,6 +27,20 @@ removal and enclosed-cavity filling, computed in a cancellable worker. Preview
 shows voxel additions/removals and volume changes; output defaults to a new ROI.
 This is independent binary processing, not joint topology-preserving smoothing.
 See [methods and limitations](EDITING_CLEANUP_20260923.md).
+
+New ROIs default to a 2× in-plane segmentation grid; existing native-resolution
+ROIs can be upgraded with undo support. Slice spacing remains unchanged. This
+improves contour placement precision without adding acquired image detail.
+Fine/thick contour outlines maintain their screen width while zooming. Saving,
+operations and RTSTRUCT export preserve the segmentation geometry. See
+[precision details](SEGMENTATION_PRECISION_20260923.md).
+
+Close application offers save/discard/cancel and gracefully stops the local
+server. Save failures keep the application open; other responding workspace
+windows must be closed first. Browser-tab closure uses the browser's generic
+warning, cannot reliably stop the server, and does not save automatically.
+If the browser refuses programmatic tab closure, a stopped-server page remains.
+See [shutdown details](APPLICATION_SHUTDOWN_20260923.md).
 
 ## Data and performance
 

@@ -1,3 +1,4 @@
+import {maskScale,gridIndex,imageCoordinate} from '../utils/segmentationGrid';
 import {Detachable} from './Detachable';
 import {referencePlane,planeMask,writePlaneMask,ImagePlane} from '../utils/panelPlane';
 import {secondaryDisplay} from '../utils/fusionDisplay';
@@ -61,6 +62,12 @@ interface MaskCanvasEntry {
 }
 
 interface ViewportProps {
+  overlayMasks?:Record<string,{mask:Uint8Array|undefined;cols:number;rows:number}>;
+  onEditorZoom?:(zoom:number)=>void;
+  contourWidth?:number;
+  contourSmooth?:boolean;
+  standaloneAxial?:boolean;
+  onMaximize?:()=>void;
   keyboardDisabled?:boolean;
   embedded?:boolean;
   secondaryOnly?:boolean;
@@ -104,7 +111,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   rois,
   activeRoi,
   activeTool,
-  onActiveToolChange, keyboardDisabled,
+  onActiveToolChange, keyboardDisabled, onEditorZoom, overlayMasks, contourWidth,contourSmooth,standaloneAxial,onMaximize,
   contourDrawMode = 'closed', onContourDrawModeChange,onFusionOpacityChange,
   brushRadiusMm,
   onBrushRadiusChange,
@@ -126,6 +133,8 @@ export const Viewport: React.FC<ViewportProps> = ({
 
   // Pan & Zoom state
   const [zoom, setZoom] = useState<number>(1.0);
+  const [editorZoom,setEditorZoom]=useState(1);
+  useEffect(()=>{if(embedded)onEditorZoom?.(zoom);},[zoom,embedded,onEditorZoom]);
   const zoomDragRef = useRef<{y:number;zoom:number}|null>(null);
   const fittedSeriesRef = useRef<DicomSeries|null>(null);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -166,12 +175,14 @@ export const Viewport: React.FC<ViewportProps> = ({
     }
   }, [series]);
 
+  useEffect(()=>{if(!series||embedded)return;const f=maskScale(activeRoi),s=series.slices[0];setMprCoords(p=>({...p,x:imageCoordinate(gridIndex(p.x,s.cols,f),f),y:imageCoordinate(gridIndex(p.y,s.rows,f),f)}));},[series,maskScale(activeRoi),embedded]);
   const handleNavigateCoordinates = useCallback((newCoords: Partial<MprCoordinates>) => {
+    if(series){const f=maskScale(activeRoi),s=series.slices[0];newCoords={...newCoords};if(newCoords.x!==undefined)newCoords.x=imageCoordinate(gridIndex(newCoords.x,s.cols,f),f);if(newCoords.y!==undefined)newCoords.y=imageCoordinate(gridIndex(newCoords.y,s.rows,f),f);}
     setMprCoords(prev => ({ ...prev, ...newCoords }));
     if (newCoords.z !== undefined && newCoords.z !== currentSliceIndex) {
       onSliceChange(newCoords.z);
     }
-  }, [currentSliceIndex, onSliceChange]);
+  }, [currentSliceIndex, onSliceChange,series,maskScale(activeRoi)]);
 
   // Cursor Probe HU DOM ref (high-performance direct updates without triggering React component re-renders)
   const probeHudRef = useRef<HTMLDivElement | null>(null);
@@ -195,7 +206,16 @@ export const Viewport: React.FC<ViewportProps> = ({
   const sharedMaskImageDataRef = useRef<{ imgData: ImageData; data32: Uint32Array; cols: number; rows: number } | null>(null);
 
   // Ergonomic Smooth Contour Rendering toggle (optical sub-pixel anti-aliasing without modifying underlying voxel data)
-  const [smoothContourRendering, setSmoothContourRendering] = useState<boolean>(true);
+  const [localSmooth, setSmoothContourRendering] = useState<boolean>(true);
+  const smoothContourRendering=contourSmooth??localSmooth;
+  const [localWidth,setContourWidth]=useState(()=>{try{return localStorage.getItem('ivcs-contour-width')==='1'?1:3;}catch{return 3;}});
+  const lineWidth=contourWidth??localWidth;
+  const boundaryCache=useRef(new WeakMap<Uint8Array,{revision:number;path:Path2D}>());
+  const strokeBoundary=(ctx:CanvasRenderingContext2D,mask:Uint8Array,cols:number,rows:number,color:string,revision=0)=>{
+    let entry=boundaryCache.current.get(mask);
+    if(!entry||entry.revision!==revision){const path=new Path2D(),box=getMaskBoundingBox(mask,rows,cols);for(let y=box?.minR??0;y<=(box?.maxR??-1);y++)for(let x=box!.minC;x<=box!.maxC;x++)if(mask[y*cols+x]){if(!y||!mask[(y-1)*cols+x]){path.moveTo(x,y);path.lineTo(x+1,y);}if(y===rows-1||!mask[(y+1)*cols+x]){path.moveTo(x,y+1);path.lineTo(x+1,y+1);}if(!x||!mask[y*cols+x-1]){path.moveTo(x,y);path.lineTo(x,y+1);}if(x===cols-1||!mask[y*cols+x+1]){path.moveTo(x+1,y);path.lineTo(x+1,y+1);}}entry={revision,path};boundaryCache.current.set(mask,entry);}
+    const screen=new Path2D();screen.addPath(entry.path,ctx.getTransform());ctx.save();ctx.resetTransform();ctx.strokeStyle=color;ctx.lineWidth=lineWidth*(ctx.canvas.width/(ctx.canvas.clientWidth||ctx.canvas.width));ctx.lineJoin='round';ctx.stroke(screen);ctx.restore();
+  };
 
   // Transient HUD notification when adjusting brush diameter with Shift + Mouse Wheel
   const [brushHudInfo, setBrushHudInfo] = useState<{
@@ -375,8 +395,8 @@ export const Viewport: React.FC<ViewportProps> = ({
     canvas.addEventListener('ivcs-view-command',command);return()=>canvas.removeEventListener('ivcs-view-command',command);
   },[handleResetView,mprViewMode,activeRoi,currentSlice,currentSliceIndex,onUpdateRoiMask,keyboardDisabled]);
   const viewCommand=(action:string)=>{
-    if(mprViewMode==='axial'){if(action==='fit')handleResetView();else setZoom(z=>Math.max(.1,Math.min(6,z*(action==='in'?1.25:.8))));return;}
-    const canvas=focusedEditor.current?.isConnected?focusedEditor.current:containerRef.current?.querySelector<HTMLCanvasElement>('canvas[data-testid^="editable-"]');
+    if(embedded){if(action==='fit')handleResetView();else setZoom(z=>Math.max(.1,Math.min(6,z*(action==='in'?1.25:.8))));return;}
+    const canvas=focusedEditor.current?.isConnected?focusedEditor.current:containerRef.current?.querySelector<HTMLCanvasElement>('canvas[data-testid^="editable-"], canvas[data-testid="axial-canvas"]');
     canvas?.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:action}));
   };
 
@@ -389,207 +409,13 @@ export const Viewport: React.FC<ViewportProps> = ({
   }, [series, fitIdentity, currentSlice, handleResetView]);
 
   // Helper: Renders mask to context with 4-neighborhood boundary line or 17-level sub-pixel anti-aliased profile
-  const renderMaskToContext = useCallback((
-    mask: Uint8Array,
-    color: string,
-    opacity: number,
-    cols: number,
-    rows: number,
-    targetCtx: CanvasRenderingContext2D,
-    isDraft: boolean = false,
-    smoothBorders: boolean = true
-  ) => {
-    let shared = sharedMaskImageDataRef.current;
-    if (!shared || shared.cols !== cols || shared.rows !== rows) {
-      const imgData = targetCtx.createImageData(cols, rows);
-      shared = {
-        imgData,
-        data32: new Uint32Array(imgData.data.buffer),
-        cols,
-        rows
-      };
-      sharedMaskImageDataRef.current = shared;
-    }
-
-    const { imgData, data32 } = shared;
-    data32.fill(0);
-
-    const hex = color.replace('#', '');
-    const rVal = parseInt(hex.substring(0, 2), 16) || 0;
-    const gVal = parseInt(hex.substring(2, 4), 16) || 0;
-    const bVal = parseInt(hex.substring(4, 6), 16) || 0;
-
-    const fillAlpha = Math.round(opacity * 255);
-    const borderAlpha = 255;
-
-    const fillColor = (fillAlpha << 24) | (bVal << 16) | (gVal << 8) | rVal;
-    const borderColor = (borderAlpha << 24) | (bVal << 16) | (gVal << 8) | rVal;
-
-    // Use cached bounding box to constrain processing window
-    const bbox = getMaskBoundingBox(mask, rows, cols);
-    if (!bbox) {
-      targetCtx.putImageData(imgData, 0, 0);
-      return;
-    }
-
-    if (smoothBorders) {
-      // Sub-pixel anti-aliased contour profile
-      // Precompute 17-level LUT: sum in [0..16]
-      const lut32 = new Uint32Array(17);
-      lut32[0] = 0; // completely outside
-      for (let s = 1; s <= 16; s++) {
-        if (s === 16) {
-          lut32[16] = fillColor;
-        } else {
-          // Continuous hat filter peaked at s=8 (the exact edge boundary)
-          const edgeDist = Math.abs(s - 8);
-          const edgeFactor = Math.max(0, (8 - edgeDist) / 8); // 0.125 .. 1.0
-          const edgeA = Math.round(borderAlpha * edgeFactor);
-          const fillA = Math.round(fillAlpha * (s / 16));
-          const finalA = Math.min(255, Math.max(edgeA, fillA));
-          lut32[s] = (finalA << 24) | (bVal << 16) | (gVal << 8) | rVal;
-        }
-      }
-
-      const startR = Math.max(1, bbox.minR - 1);
-      const endR = Math.min(rows - 2, bbox.maxR + 1);
-      const startC = Math.max(1, bbox.minC - 1);
-      const endC = Math.min(cols - 2, bbox.maxC + 1);
-
-      // Outer boundary rows/columns
-      if (bbox.minR === 0) {
-        for (let c = 0; c < cols; c++) {
-          if (mask[c] === 1) data32[c] = borderColor;
-        }
-      }
-      if (bbox.maxR === rows - 1) {
-        const lastRowOffset = (rows - 1) * cols;
-        for (let c = 0; c < cols; c++) {
-          if (mask[lastRowOffset + c] === 1) data32[lastRowOffset + c] = borderColor;
-        }
-      }
-      if (bbox.minC === 0) {
-        for (let r = startR; r <= endR; r++) {
-          if (mask[r * cols] === 1) data32[r * cols] = borderColor;
-        }
-      }
-      if (bbox.maxC === cols - 1) {
-        const lastCol = cols - 1;
-        for (let r = startR; r <= endR; r++) {
-          if (mask[r * cols + lastCol] === 1) data32[r * cols + lastCol] = borderColor;
-        }
-      }
-
-      // Interior bounded rows
-      for (let r = startR; r <= endR; r++) {
-        const rOffset = r * cols;
-        const prevOffset = (r - 1) * cols;
-        const nextOffset = (r + 1) * cols;
-
-        for (let c = startC; c <= endC; c++) {
-          const center = mask[rOffset + c];
-          const left = mask[rOffset + c - 1];
-          const right = mask[rOffset + c + 1];
-          const top = mask[prevOffset + c];
-          const bottom = mask[nextOffset + c];
-
-          const orthoSum = left + right + top + bottom;
-
-          if (center === 0 && orthoSum === 0) {
-            // Check diagonal corners for smooth corner continuity
-            const tl = mask[prevOffset + c - 1];
-            const tr = mask[prevOffset + c + 1];
-            const bl = mask[nextOffset + c - 1];
-            const br = mask[nextOffset + c + 1];
-            const diagSum = tl + tr + bl + br;
-            if (diagSum > 0) {
-              data32[rOffset + c] = lut32[diagSum];
-            }
-          } else {
-            const tl = mask[prevOffset + c - 1];
-            const tr = mask[prevOffset + c + 1];
-            const bl = mask[nextOffset + c - 1];
-            const br = mask[nextOffset + c + 1];
-            const sum = 4 * center + 2 * orthoSum + (tl + tr + bl + br);
-            data32[rOffset + c] = lut32[sum];
-          }
-        }
-      }
-    } else {
-      // Discrete 4-neighborhood exact voxel border
-      const is32Aligned = (mask.byteOffset % 4 === 0) && ((cols & 3) === 0);
-      const u32Cols = cols >> 2;
-      const mask32 = is32Aligned ? new Uint32Array(mask.buffer, mask.byteOffset, mask.byteLength >> 2) : null;
-
-      // Row 0 (boundary row)
-      if (bbox.minR === 0) {
-        for (let c = 0; c < cols; c++) {
-          if (mask[c] === 1) data32[c] = borderColor;
-        }
-      }
-
-      // Rows 1 to rows - 2 (bounded by bbox)
-      const startR = Math.max(1, bbox.minR);
-      const endR = Math.min(rows - 2, bbox.maxR);
-      for (let r = startR; r <= endR; r++) {
-        const rOffset = r * cols;
-        const r32Offset = r * u32Cols;
-
-        // Fast check if row has any pixels using 32-bit words if aligned
-        let rowHasPixels = false;
-        if (mask32) {
-          for (let k = 0; k < u32Cols; k++) {
-            if (mask32[r32Offset + k] !== 0) {
-              rowHasPixels = true;
-              break;
-            }
-          }
-        } else {
-          for (let c = 0; c < cols; c++) {
-            if (mask[rOffset + c] !== 0) {
-              rowHasPixels = true;
-              break;
-            }
-          }
-        }
-        if (!rowHasPixels) continue;
-
-        // Left boundary pixel (c = 0)
-        if (mask[rOffset] === 1) {
-          data32[rOffset] = borderColor;
-        }
-
-        // Interior pixels: branch-free 4-neighbor check
-        const startC = Math.max(1, bbox.minC);
-        const endC = Math.min(cols - 2, bbox.maxC);
-        for (let c = startC; c <= endC; c++) {
-          const idx = rOffset + c;
-          if (mask[idx] === 1) {
-            const isBorder = (
-              mask[idx - 1] === 0 || mask[idx + 1] === 0 ||
-              mask[idx - cols] === 0 || mask[idx + cols] === 0
-            );
-            data32[idx] = isBorder ? borderColor : fillColor;
-          }
-        }
-
-        // Right boundary pixel (c = cols - 1)
-        const rightIdx = rOffset + (cols - 1);
-        if (mask[rightIdx] === 1) {
-          data32[rightIdx] = borderColor;
-        }
-      }
-
-      // Row rows - 1 (boundary row)
-      if (bbox.maxR === rows - 1) {
-        const lastRowOffset = (rows - 1) * cols;
-        for (let c = 0; c < cols; c++) {
-          if (mask[lastRowOffset + c] === 1) data32[lastRowOffset + c] = borderColor;
-        }
-      }
-    }
-
-    targetCtx.putImageData(imgData, 0, 0);
+  const renderMaskToContext = useCallback((mask:Uint8Array,color:string,opacity:number,cols:number,rows:number,targetCtx:CanvasRenderingContext2D,_draft=false,_smooth=true)=>{
+    let shared=sharedMaskImageDataRef.current;
+    if(!shared||shared.cols!==cols||shared.rows!==rows){const imgData=targetCtx.createImageData(cols,rows);shared={imgData,data32:new Uint32Array(imgData.data.buffer),cols,rows};sharedMaskImageDataRef.current=shared;}
+    const rgb=parseInt(color.slice(1),16),value=(Math.round(opacity*255)<<24)|((rgb&255)<<16)|(rgb&0xff00)|(rgb>>>16);
+    const {imgData,data32}=shared;data32.fill(0);
+    if(opacity>0)for(let i=0;i<mask.length;i++)if(mask[i])data32[i]=value;
+    targetCtx.putImageData(imgData,0,0);
   }, []);
 
   // Fast Windowing Look-Up Table (LUT) with size 8192 for full CT range (-2048 to +6144 HU)
@@ -891,7 +717,8 @@ export const Viewport: React.FC<ViewportProps> = ({
 
       const currentActiveRoi = activeRoiRef.current;
       const isDraft = Boolean(currentActiveRoi && roi.id === currentActiveRoi.id && currentDraftMaskRef.current);
-      const mask = isDraft ? currentDraftMaskRef.current : roi.sliceMasks[currentSliceIndex];
+      const overlay=!isDraft?overlayMasks?.[roi.id]:undefined;
+      const mask = isDraft ? currentDraftMaskRef.current : overlay?overlay.mask:roi.sliceMasks[currentSliceIndex];
       if (!mask) continue;
 
       // When actively erasing, render the original pre-stroke contour as a subtle ghost reference line (35% opacity)
@@ -909,6 +736,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         if (ghostCanvas) {
           ctx.save();
           ctx.globalAlpha = 0.35;
+          strokeBoundary(ctx,originalStrokeMaskRef.current!,cols,rows,roi.color);
           if (smoothContourRendering) {
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
@@ -921,13 +749,15 @@ export const Viewport: React.FC<ViewportProps> = ({
         }
       }
 
+      const mw=overlay?.cols||cols,mh=overlay?.rows||rows;
+      ctx.save();ctx.scale(cols/mw,rows/mh);
       const maskCanvas = getCachedRoiMaskCanvas(
         roi.id,
         mask,
         roi.color,
         roi.opacity,
-        cols,
-        rows,
+        mw,
+        mh,
         isDraft
       );
       if (maskCanvas) {
@@ -940,6 +770,7 @@ export const Viewport: React.FC<ViewportProps> = ({
           ctx.drawImage(maskCanvas, 0, 0);
         }
       }
+      strokeBoundary(ctx,mask,mw,mh,roi.color,isDraft?getMaskRevision(mask):0);ctx.restore();
     }
 
     // 3. Render Live Freehand Pencil Stroke Preview
@@ -1034,7 +865,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       ctx.lineWidth = 1 / zoom;
 
       // Vertical line: Sagittal plane (X)
-      const sagX = Math.max(0, Math.min(currentSlice.cols - 1, crosshairPosition?.x ?? mprCoords.x));
+      const sagX = Math.max(0, Math.min(currentSlice.cols - 1, crosshairPosition?.x ?? mprCoords.x))+.5;
       ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)'; // Amber
       ctx.setLineDash([4 / zoom, 4 / zoom]);
       ctx.beginPath();
@@ -1043,7 +874,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       ctx.stroke();
 
       // Horizontal line: Coronal plane (Y)
-      const corY = Math.max(0, Math.min(currentSlice.rows - 1, crosshairPosition?.y ?? mprCoords.y));
+      const corY = Math.max(0, Math.min(currentSlice.rows - 1, crosshairPosition?.y ?? mprCoords.y))+.5;
       ctx.strokeStyle = 'rgba(16, 185, 129, 0.75)'; // Emerald
       ctx.beginPath();
       ctx.moveTo(0, corY);
@@ -1075,7 +906,7 @@ export const Viewport: React.FC<ViewportProps> = ({
     rulerStart, 
     rulerEnd,
     getCachedCtCanvas,
-    getCachedRoiMaskCanvas,
+    getCachedRoiMaskCanvas, lineWidth, overlayMasks,
     studies,
     registrationState, secondaryOnly,
     multi,
@@ -1686,7 +1517,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (embedded && canvasRef.current?.ownerDocument.activeElement!==canvasRef.current) return;
-      if (!embedded && (document.activeElement as HTMLElement)?.dataset?.testid?.startsWith('editable-'))return;
+      if (!embedded && ((document.activeElement as HTMLElement)?.dataset?.testid?.startsWith('editable-') || (document.activeElement as HTMLElement)?.dataset?.testid==='axial-canvas'))return;
       if (document.querySelector('[role="dialog"]') || keyboardDisabled || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
 
       if (e.key === 'Escape') {
@@ -1738,12 +1569,12 @@ export const Viewport: React.FC<ViewportProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                <button type="button" onClick={handleResetView} title={tr(embedded?'Restablecer vista':'Restablecer zoom axial')} aria-label={tr(embedded?'Restablecer vista':'Restablecer zoom axial')}
+                <button type="button" onClick={handleResetView} title={tr(embedded&&!standaloneAxial?'Restablecer vista':'Restablecer zoom axial')} aria-label={tr(embedded&&!standaloneAxial?'Restablecer vista':'Restablecer zoom axial')}
                   className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md">
                   <RotateCcw className="w-3.5 h-3.5" />
                 </button>
                 <button
-                  onClick={() => setMprViewMode(multi?'axial':'triplanar')} hidden={embedded}
+                  onClick={() => onMaximize?onMaximize():setMprViewMode(multi?'axial':'triplanar')} hidden={embedded&&!standaloneAxial}
                   className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md"
                   title={tr("Maximizar Plano Axial")}
                 >
@@ -1762,7 +1593,7 @@ export const Viewport: React.FC<ViewportProps> = ({
             {/* Canvas Viewport */}
             <canvas
               ref={canvasRef}
-              tabIndex={0} data-testid={embedded?`editable-${planeLabel}`:"axial-canvas"} data-slice-index={currentSliceIndex} data-zoom={zoom} data-pan-x={pan.x} data-pan-y={pan.y}
+              tabIndex={0} data-testid={embedded&&!standaloneAxial?`editable-${planeLabel}`:"axial-canvas"} data-slice-index={currentSliceIndex} data-zoom={zoom} data-pan-x={pan.x} data-pan-y={pan.y}
         onPointerDown={(e) => {
           if (!e.isPrimary) return; e.currentTarget.focus();
           try {
@@ -1857,7 +1688,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
     </div>
   );
-  const planeEditor=(plane:ImagePlane,config:PaneConfig,secondaryId?:string)=><ProjectedEditor {...{series,plane,config,secondaryId,studies,registrationState,rois,activeRoi,activeTool,brushRadiusMm,contourDrawMode,windowCenter,windowWidth,onWindowChange,onBrushRadiusChange,onActiveToolChange,huConstraintEnabled,huConstraintMin,huConstraintMax,keyboardDisabled,onUpdateRoiMasks}} onEditorActivate={canvas=>{focusedEditor.current=canvas;onEditorActivate?.(canvas);}} crosshairsVisible={showCrosshairs} coordinates={mprCoords} onNavigate={handleNavigateCoordinates}/>;
+  const planeEditor=(plane:ImagePlane,config:PaneConfig,secondaryId?:string)=><ProjectedEditor {...{series,plane,config,secondaryId,studies,registrationState,rois,activeRoi,activeTool,brushRadiusMm,contourDrawMode,windowCenter,windowWidth,onWindowChange,onBrushRadiusChange,onActiveToolChange,huConstraintEnabled,huConstraintMin,huConstraintMax,keyboardDisabled,onUpdateRoiMasks}} onEditorZoom={mprViewMode==='axial'?setEditorZoom:undefined} contourWidth={lineWidth} contourSmooth={smoothContourRendering} standaloneAxial={mprViewMode==='axial'} onMaximize={()=>setMprViewMode(multi?'axial':'triplanar')} onEditorActivate={canvas=>{focusedEditor.current=canvas;onEditorActivate?.(canvas);}} crosshairsVisible={showCrosshairs} coordinates={mprCoords} onNavigate={handleNavigateCoordinates}/>;
   if(embedded)return <div className="flex flex-col flex-1 min-h-0 min-w-0">{axialPanel}{activeTool==='polygon' && polygonPoints.length>0 && <div className="flex gap-2 text-xs p-1 bg-zinc-950"><button disabled={polygonPoints.length<3} onClick={finishPolygon}>{tr('Finalizar (Enter)')}</button><button onClick={cancelPolygon}>{tr('Cancelar (Esc)')}</button></div>}</div>;
   return (
     <div 
@@ -1930,7 +1761,8 @@ export const Viewport: React.FC<ViewportProps> = ({
 
         {/* Right Action: Smooth Contours, Crosshairs Toggle & Coordinates Indicator */}
         <div className="flex items-center gap-2">
-          {/* Smooth Contour Anti-aliasing Toggle */}
+          <select data-testid="contour-line-width" aria-label={tr('Grosor del contorno')} className="bg-zinc-900 text-xs border border-zinc-700 rounded p-1" value={lineWidth} onChange={e=>{const v=Number(e.target.value);setContourWidth(v);try{localStorage.setItem('ivcs-contour-width',String(v));}catch{}}}><option value="1">{tr('Línea fina')}</option><option value="3">{tr('Línea gruesa')}</option></select>
+          {/* Fill interpolation is independent from geometric contour width. */}
           <button
             id="btn-toggle-smooth-contours"
             onClick={() => setSmoothContourRendering(prev => !prev)}
@@ -1939,10 +1771,10 @@ export const Viewport: React.FC<ViewportProps> = ({
                 ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
                 : 'bg-[#18181A] border-[#333] text-[#777] hover:text-[#E2E2E2]'
             }`}
-            title={tr("Renderizado con Suavizado de Bordes: Aspecto suave y continuo con anti-aliasing sub-píxel en pantalla sin afectar la precisión matemática de la máscara de vóxeles (Click para alternar)")}
+            title={tr("Suaviza el relleno en pantalla sin modificar la máscara ni el grosor del borde.")}
           >
             <span className={`w-2 h-2 rounded-full ${smoothContourRendering ? 'bg-emerald-400 ' : 'bg-[#555]'}`} />
-            <span className="hidden sm:inline">{smoothContourRendering ? tr("Bordes Suaves") : tr("Píxel 1:1")}</span>
+            <span className="hidden sm:inline">{smoothContourRendering ? tr("Suavizar relleno") : tr("Píxel 1:1")}</span>
           </button>
 
           <button
@@ -1975,7 +1807,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         <span>{({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),zoom:tr("Zoom"),window:tr("Ventana"),ruler:tr("Regla")})[activeTool]}</span>
         {["brush","eraser","pencil"].includes(activeTool) && <label className={brushHudInfo.visible?'text-sky-300':'text-zinc-300'} title={tr("Radio físico del pincel. Mayús + rueda para ajustar.")}>{" "}{tr("Radio")}{" "}<input aria-label={tr("Radio del pincel")} type="number" min="0.5" max="50" step="0.5" className="w-16 bg-zinc-800 rounded px-1" value={brushRadiusMm} onChange={e=>{const v=Number(e.target.value);if(Number.isFinite(v) && v>=.5 && v<=50)onBrushRadiusChange?.(v);}}/>{" "}{tr("mm")}{" "}</label>}
         {["brush","pencil","polygon"].includes(activeTool) && <select aria-label={tr("Modo de contorno")} className="bg-zinc-800 rounded p-1" value={contourDrawMode} onChange={e=>onContourDrawModeChange?.(e.target.value as ContourDrawMode)}><option value="closed">{" "}{tr("Cerrado")}{" "}</option><option value="open">{" "}{tr("Abierto")}{" "}</option></select>}
-        <div className="flex items-center gap-2 ml-auto"><span title={tr("Ancho y centro de ventana")}>{" "}{tr("W")}{" "}{windowWidth}{" "}{tr("· L")}{" "}{windowCenter}</span><span className="text-zinc-400">{tr(mprViewMode==='axial'?'Axial':'Panel activo')}</span><button title={tr("Alejar")} onClick={()=>viewCommand('out')}>−</button><span>{mprViewMode==='axial'?`${zoom.toFixed(1)} ×`:''}{" "}</span><button title={tr("Acercar")} onClick={()=>viewCommand('in')}>+</button><button onClick={()=>viewCommand('fit')}>{" "}{tr("Ajustar")}{" "}</button></div>
+        <div className="flex items-center gap-2 ml-auto"><span title={tr("Ancho y centro de ventana")}>{" "}{tr("W")}{" "}{windowWidth}{" "}{tr("· L")}{" "}{windowCenter}</span><span className="text-zinc-400">{tr(mprViewMode==='axial'?'Axial':'Panel activo')}</span><button title={tr("Alejar")} onClick={()=>viewCommand('out')}>−</button><span>{mprViewMode==='axial'?`${editorZoom.toFixed(1)} ×`:''}{" "}</span><button title={tr("Acercar")} onClick={()=>viewCommand('in')}>+</button><button onClick={()=>viewCommand('fit')}>{" "}{tr("Ajustar")}{" "}</button></div>
         {registrationState?.active && <div className="flex items-center gap-2"><button onClick={onOpenRegistrationModal}>{" "}{tr("Fusión ·")}{" "}{series?.modality} + {studies.find(s=>s.id===registrationState.secondaryStudyId)?.modality}</button><input aria-label={tr("Opacidad de fusión")} type="range" min="0" max="1" step=".05" className="w-20" value={registrationState.fusionOpacity} onChange={e=>onFusionOpacityChange?.(Number(e.target.value))}/></div>}
       </div>
       {/* Polygon in-progress Action Bar */}
@@ -2005,7 +1837,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
       {/* Mount only visible panels: inactive 3D renderers and workers are disposed. */}
       <div className="flex-1 min-h-0 relative w-full overflow-hidden flex">
-        {mprViewMode==='coronal' || mprViewMode==='sagittal'?planeEditor(mprViewMode,{plane:mprViewMode,mode:'reference'}):mprViewMode==='axial'?axialPanel:
+        {mprViewMode==='coronal' || mprViewMode==='sagittal'?planeEditor(mprViewMode,{plane:mprViewMode,mode:'reference'}):mprViewMode==='axial'?planeEditor('axial',{plane:'axial',mode:registrationState?.active?registrationState.fusionMode:'reference'},registrationState?.secondaryStudyId):
         <div ref={workspaceRef} data-testid="multi-layout" className="relative grid flex-1 min-w-0 min-h-0 gap-1 p-1 bg-zinc-950" style={{gridTemplateColumns:mprViewMode==='oneplus2'?`minmax(0,${split}fr) 6px minmax(0,${100-split}fr)`:'repeat(2,minmax(0,1fr))',gridTemplateRows:'repeat(2,minmax(0,1fr))'}}>
           {paneConfigs.slice(0,mprViewMode==='oneplus2'?3:4).map((config,index)=><div key={index} className="flex flex-col min-w-0 min-h-0" style={mprViewMode==='oneplus2'?index===0?{gridColumn:1,gridRow:'1 / 3'}:{gridColumn:3,gridRow:index}:undefined}>
             <Detachable id={`pane-${index}`} title={tr('Panel principal')} enabled={index===0 && mprViewMode==='oneplus2'}><ConfigurablePane renderEditor={planeEditor} index={index} config={config} onChange={value=>setPaneConfigs(p=>p.map((c,i)=>i===index?value:c))} series={series} studies={studies} coordinates={mprCoords} onNavigate={handleNavigateCoordinates} rois={rois} activeRoiId={activeRoi?.id} registration={registrationState} windowCenter={windowCenter} windowWidth={windowWidth} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} detailPlane={detailPlane} onActivate={setDetailPlane} controls={mprControls} /></Detachable>
@@ -2077,16 +1909,18 @@ export const Viewport: React.FC<ViewportProps> = ({
 /** Project the reference labelmap onto an editable plane; never edit resampled secondary voxels. */
 function ProjectedEditor(props:Omit<ViewportProps,'currentSliceIndex'|'onSliceChange'|'onUpdateRoiMask'> & {plane:ImagePlane;config:PaneConfig;secondaryId?:string;coordinates:MprCoordinates;onNavigate:(p:Partial<MprCoordinates>)=>void}) {
  const {series,plane,coordinates,config,rois,activeRoi,onNavigate,onUpdateRoiMasks}=props;
- const fitKey=useMemo(()=>({series,plane}),[series,plane]);
- const slice=useMemo(()=>series?referencePlane(series,coordinates,plane):undefined,[series,plane,coordinates]);
+ const scale=maskScale(activeRoi),key=plane==='axial'?'z':plane==='coronal'?'y':'x',coordinate=coordinates[key];
+ const fitKey=useMemo(()=>({series,plane,scale}),[series,plane,scale]);
+ const slice=useMemo(()=>series?referencePlane(series,coordinates,plane,scale):undefined,[series,plane,coordinate,scale]);
  const projectedSeries=useMemo(()=>series&&slice?{...series,slices:[slice]}:null,[series,slice]);
- const projectedRois=useMemo(()=>series?rois.map(r=>({...r,sliceMasks:{0:planeMask(series,coordinates,plane,r)||new Uint8Array(slice!.rows*slice!.cols)}})):[],[series,rois,coordinates,plane,slice]);
- const key=plane==='axial'?'z':plane==='coronal'?'y':'x';
- const scroll=(step:number)=>{if(!series)return;const limit=key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols;onNavigate({[key]:Math.max(0,Math.min(limit-1,coordinates[key]+step))});};
- const navigate=(u:number,v:number)=>{if(!series||!slice)return;const x=Math.max(0,Math.min(slice.cols-1,Math.floor(u))),y=Math.max(0,Math.min(slice.rows-1,Math.floor(v)));onNavigate(plane==='axial'?{x,y}:plane==='coronal'?{x,z:series.slices.length-1-y}:{y:x,z:series.slices.length-1-y});};
+ const projectedRois=useMemo(()=>series?rois.map(r=>({...r,maskScale:1 as const,sliceMasks:{0:r.id===activeRoi?.id?(planeMask(series,coordinates,plane,r)||new Uint8Array(slice!.rows*slice!.cols)):undefined}})):[],[series,rois,coordinate,plane,slice,scale,activeRoi?.id]);
+ const overlayMasks=useMemo(()=>series?Object.fromEntries(rois.filter(r=>r.visible).map(r=>{const f=maskScale(r),first=series.slices[0];return [r.id,{mask:planeMask(series,coordinates,plane,r),cols:(plane==='sagittal'?first.rows:first.cols)*f,rows:plane==='axial'?first.rows*f:series.slices.length}];})):undefined,[series,rois,coordinate,plane]);
+
+ const scroll=(step:number)=>{if(!series)return;const limit=key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols;onNavigate({[key]:key==='z'?Math.max(0,Math.min(limit-1,coordinates.z+step)):imageCoordinate(Math.max(0,Math.min(limit*scale-1,gridIndex(coordinates[key],limit,scale)+step)),scale)});};
+ const navigate=(u:number,v:number)=>{if(!series||!slice)return;const x=Math.max(0,Math.min(slice.cols-1,Math.floor(u))),y=Math.max(0,Math.min(slice.rows-1,Math.floor(v)));onNavigate(plane==='axial'?{x:imageCoordinate(x,scale),y:imageCoordinate(y,scale)}:plane==='coronal'?{x:imageCoordinate(x,scale),z:series.slices.length-1-y}:{y:imageCoordinate(x,scale),z:series.slices.length-1-y});};
  const commit=(id:string,_z:number,mask:Uint8Array)=>{const roi=rois.find(r=>r.id===id);if(!series||!roi||roi.locked||props.keyboardDisabled)return;const updates=writePlaneMask(series,coordinates,plane,roi,mask);if(Object.keys(updates).length)onUpdateRoiMasks?.(id,updates);};
  if(config.mode==='compare')return <div className="flex flex-1 min-h-0 min-w-0">{['reference','secondary'].map(mode=><div key={mode} className="flex flex-1 min-h-0 min-w-0"><ProjectedEditor {...props} config={{...config,mode}}/></div>)}</div>;
  const secondary=props.studies?.find(s=>s.id===props.secondaryId);
  const registration=props.registrationState?{...props.registrationState,active:config.mode!=='reference'&&!!secondary,showVoiOverlay:false,secondaryStudyId:secondary?.id||props.registrationState.secondaryStudyId,fusionMode:config.mode==='secondary'?'blend':config.mode as RegistrationState['fusionMode'],fusionOpacity:config.mode==='secondary'?1:props.registrationState.fusionOpacity,...(secondary && secondary.id!==props.registrationState.secondaryStudyId?secondaryDisplay(secondary):{})}:undefined;
- return <Viewport {...props} embedded secondaryOnly={config.mode==='secondary'} planeLabel={plane} fitIdentity={fitKey} planeIndexLabel={`${coordinates[key]+1}/${!series?0:key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols}`} crosshairPosition={plane==='axial'?{x:coordinates.x,y:coordinates.y}:plane==='coronal'?{x:coordinates.x,y:(series?.slices.length||1)-1-coordinates.z}:{x:coordinates.y,y:(series?.slices.length||1)-1-coordinates.z}} series={projectedSeries} rois={projectedRois} activeRoi={projectedRois.find(r=>r.id===activeRoi?.id)||null} currentSliceIndex={0} onSliceChange={()=>{}} onPlaneScroll={scroll} onPlaneNavigate={navigate} onUpdateRoiMask={commit} registrationState={registration}/>;
+ return <Viewport {...props} overlayMasks={overlayMasks} embedded secondaryOnly={config.mode==='secondary'} planeLabel={plane} fitIdentity={fitKey} planeIndexLabel={`${Number((coordinates[key]+1).toFixed(2))}/${!series?0:key==='z'?series.slices.length:key==='y'?series.slices[0].rows:series.slices[0].cols}`} crosshairPosition={plane==='axial'?{x:(coordinates.x+.5)*scale-.5,y:(coordinates.y+.5)*scale-.5}:plane==='coronal'?{x:(coordinates.x+.5)*scale-.5,y:(series?.slices.length||1)-1-coordinates.z}:{x:(coordinates.y+.5)*scale-.5,y:(series?.slices.length||1)-1-coordinates.z}} series={projectedSeries} rois={projectedRois} activeRoi={projectedRois.find(r=>r.id===activeRoi?.id)||null} currentSliceIndex={0} onSliceChange={()=>{}} onPlaneScroll={scroll} onPlaneNavigate={navigate} onUpdateRoiMask={commit} registrationState={registration}/>;
 }

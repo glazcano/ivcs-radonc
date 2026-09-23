@@ -1,3 +1,4 @@
+import {maskGeometry,maskScale,nativeMaskIndex,type MaskScale} from './segmentationGrid';
 import type {DicomSeries,DicomSlice,StructureRoi} from '../types';
 import type {LibraryStudy} from './libraryClient';
 import {volumeSampler} from './volumeSampling';
@@ -25,28 +26,29 @@ export function combineTemporalPlanes(planes:ReturnType<typeof temporalPlane>[],
 }
 /** Union of phase masks in patient coordinates; nearest-neighbour mask sampling.
  * No registration is applied: the respiratory displacement is the quantity retained. */
-export function unionPhaseMasks(reference:DicomSeries,phases:{series:DicomSeries;roi:StructureRoi}[]){
+export function unionPhaseMasks(reference:DicomSeries,phases:{series:DicomSeries;roi:StructureRoi}[],targetScale:MaskScale=phases.some(p=>maskScale(p.roi)===2)?2:1){
  if(!phases.length)throw new Error('No phase contours selected.');
  const result:Record<number,Uint8Array>={};
  for(const phase of phases){
   if(phase.series.patientId!==reference.patientId || phase.series.frameOfReferenceUID!==reference.frameOfReferenceUID)throw new Error('Phase contours have incompatible DICOM coordinates.');
-  const first=phase.series.slices[0],dz=phase.series.slices.length>1?phase.series.slices[1].imagePositionPatient![2]-first.imagePositionPatient![2]:first.sliceThickness;
+  if(targetScale<maskScale(phase.roi))throw new Error('ITV grid cannot reduce segmentation resolution.');
+  const first=maskGeometry(phase.series.slices[0],maskScale(phase.roi)),dz=phase.series.slices.length>1?phase.series.slices[1].imagePositionPatient![2]-first.imagePositionPatient![2]:first.sliceThickness;
   if(phase.series.slices.some(s=>s.imageOrientationPatient!.some((v,i)=>Math.abs(v-[1,0,0,0,1,0][i])>1e-4)))throw new Error('Phase mask grid must be axial.');
-  const ref=reference.slices[0],refDz=reference.slices.length>1?reference.slices[1].imagePositionPatient![2]-ref.imagePositionPatient![2]:ref.sliceThickness;
+  const ref=maskGeometry(reference.slices[0],targetScale),refDz=reference.slices.length>1?reference.slices[1].imagePositionPatient![2]-ref.imagePositionPatient![2]:ref.sliceThickness;
   for(const [key,mask] of Object.entries(phase.roi.sliceMasks)){
-   const s=phase.series.slices[Number(key)];if(!s || mask.length!==s.rows*s.cols)throw new Error('Invalid phase contour geometry.');
+   const native=phase.series.slices[Number(key)];const s=native?maskGeometry(native,maskScale(phase.roi)):undefined;if(!s || mask.length!==s.rows*s.cols)throw new Error('Invalid phase contour geometry.');
    for(let i=0;i<mask.length;i++)if(mask[i]){
     const p=patientPoint(s,i%s.cols,Math.floor(i/s.cols)),x=(p[0]-ref.imagePositionPatient![0])/ref.pixelSpacing[1],y=(p[1]-ref.imagePositionPatient![1])/ref.pixelSpacing[0],z=(p[2]-ref.imagePositionPatient![2])/refDz;
     if(x<-.5 || y<-.5 || z<-.5 || x>=ref.cols-.5 || y>=ref.rows-.5 || z>=reference.slices.length-.5)throw new Error('A phase contour extends beyond the reference field of view; no cropped ITV was created.');
    }
   }
   for(let z=0;z<reference.slices.length;z++){
-   const s=reference.slices[z];let mask=result[z];
+   const s=maskGeometry(reference.slices[z],targetScale);let mask=result[z];
    for(let y=0;y<s.rows;y++)for(let x=0;x<s.cols;x++){
-    const p=patientPoint(s,x,y),zi=Math.round((p[2]-first.imagePositionPatient![2])/dz),src=phase.series.slices[zi];if(!src)continue;
+    const p=patientPoint(s,x,y),zi=Math.round((p[2]-first.imagePositionPatient![2])/dz),native=phase.series.slices[zi];if(!native)continue;const src=maskGeometry(native,maskScale(phase.roi));
     const xi=Math.round((p[0]-src.imagePositionPatient![0])/src.pixelSpacing[1]),yi=Math.round((p[1]-src.imagePositionPatient![1])/src.pixelSpacing[0]);
     if(xi<0 || yi<0 || xi>=src.cols || yi>=src.rows)continue;
-    if(phase.roi.sliceMasks[zi]?.[yi*src.cols+xi]){if(s.valid && !s.valid[y*s.cols+x])throw new Error('A phase contour crosses missing reference image data.');mask ||= new Uint8Array(s.rows*s.cols);mask[y*s.cols+x]=1;}
+    if(phase.roi.sliceMasks[zi]?.[yi*src.cols+xi]){if(s.valid && !s.valid[nativeMaskIndex(y*s.cols+x,reference.slices[z].cols,targetScale)])throw new Error('A phase contour crosses missing reference image data.');mask ||= new Uint8Array(s.rows*s.cols);mask[y*s.cols+x]=1;}
    }
    if(mask)result[z]=mask;
   }

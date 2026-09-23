@@ -1,4 +1,6 @@
+import {nativeMaskIndex} from './segmentationGrid';
 export interface CleanupInput {
+  validScale?:1|2;
   cols:number;rows:number;depth:number;spacing:[number,number,number];
   masks:Record<number,Uint8Array>;valid?:Record<number,Uint8Array>;
   method:'none'|'median'|'opening'|'closing';radiusMm:number;
@@ -28,7 +30,7 @@ export function cleanupVolume(p:CleanupInput,progress:(n:number)=>void=()=>{}):C
   if(n>64*1024*1024)throw new Error('La región requiere demasiada memoria para la limpieza local.');
   let volume=new Uint8Array(n);const allowed=new Uint8Array(n);
   const globalIndex=(i:number)=>{const z=Math.floor(i/wh),y=Math.floor(i%wh/w),x=i%w;return [z+lo[2],(y+lo[1])*cols+x+lo[0]];};
-  for(let i=0;i<n;i++){const [z,j]=globalIndex(i);allowed[i]=p.valid?.[z]?.[j]===0?0:1;volume[i]=allowed[i]&&p.masks[z]?.[j]?1:0;}
+  for(let i=0;i<n;i++){const [z,j]=globalIndex(i);allowed[i]=p.valid?.[z]?.[nativeMaskIndex(j,cols/(p.validScale||1),p.validScale||1)]===0?0:1;volume[i]=allowed[i]&&p.masks[z]?.[j]?1:0;}
   const offsets:number[][]=[];
   if(p.method!=='none'){
     if(radius.reduce((n,r)=>n*(2*r+1),1)>1000000)throw new Error('Reduzca el radio de suavizado para esta resolución.');

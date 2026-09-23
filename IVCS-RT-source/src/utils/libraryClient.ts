@@ -1,3 +1,4 @@
+import {validateMaskGrids} from './segmentationGrid';
 import {identity3d,volumeCenter} from './rigid3d';
 import {readStudyStream} from './studyStream';
 import type { Session } from './session';
@@ -60,15 +61,17 @@ export async function openLibraryStudy(key:string):Promise<Session> {
   const patient=index.patients.find(p=>p.studies.some(s=>s.key===key))!;
   for(const s of studies) {const entry=patient.studies.find(e=>e.id===s.id);if(entry)known.set(s,entry.key);}
   const reference=studies.find(s=>s.id===selected.id)!;
+  if(state?.rois)validateMaskGrids(state.rois,reference);
   revisions.set(reference,revision);baselines.set(reference,state?.rois || []);
   if(state?.registrationState && Object.values(state.registrationState.transforms || {}).some((t:any)=>t.model!=='rigid3d')){state.registrationState.active=false;state.registrationState.transforms={};}
   if(state?.registrationState?.active){const secondary=patient.studies.find(s=>s.id===state.registrationState.secondaryStudyId);if(secondary && secondary.key!==key)studies.push(await loadSecondaryStudy(secondary.key));}
   // Preserve per-series contours; never transfer a mask onto another reference grid.
   return {format:'radcontour-session',version:1,series:reference,studies,
-    rois:[{id:'roi-'+key,name:'PTV',type:'PTV',color:'#ef4444',visible:true,locked:false,opacity:0.45,sliceMasks:{}}],currentSliceIndex:Math.floor(reference.slices.length/2),activeRoiId:'roi-'+key,windowCenter:reference.slices[0].windowCenter,windowWidth:reference.slices[0].windowWidth,
+    rois:[{id:'roi-'+key,name:'PTV',maskScale:2,type:'PTV',color:'#ef4444',visible:true,locked:false,opacity:0.45,sliceMasks:{}}],currentSliceIndex:Math.floor(reference.slices.length/2),activeRoiId:'roi-'+key,windowCenter:reference.slices[0].windowCenter,windowWidth:reference.slices[0].windowWidth,
     registrationState:defaultRegistration(reference.id,studies.find(s=>s.id!==reference.id)?.id),...state};
 }
 export async function saveLibrarySession(session:Session):Promise<void> {
+  validateMaskGrids(session.rois,session.series);
   const reference=session.studies.find(s=>s.id===session.registrationState.referenceStudyId);
   if(reference)for(const key of ['studyInstanceUID','seriesInstanceUID','frameOfReferenceUID','patientBirthDate','patientSex','studyDate','studyTime','accessionNumber']) {
     if(reference[key]===undefined && session.series[key]!==undefined)reference[key]=session.series[key];

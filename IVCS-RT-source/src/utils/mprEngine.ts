@@ -1,3 +1,4 @@
+import {maskScale,imageCoordinate} from './segmentationGrid';
 import { patientPoint } from './geometry';
 import { DicomSeries, DicomSlice, StructureRoi, MprPlane, MprCoordinates } from '../types';
 
@@ -388,6 +389,7 @@ export function calculateRoiCentroid(
 ): MprCoordinates | null {
   if (!roi || !roi.sliceMasks) return null;
 
+  const scale=maskScale(roi);cols*=scale;rows*=scale;
   let sumX = 0;
   let sumY = 0;
   let sumZ = 0;
@@ -413,8 +415,8 @@ export function calculateRoiCentroid(
   if (count === 0) return null;
 
   return {
-    x: Math.round(sumX / count),
-    y: Math.round(sumY / count),
+    x: imageCoordinate(sumX / count,scale),
+    y: imageCoordinate(sumY / count,scale),
     z: Math.round(sumZ / count)
   };
 }

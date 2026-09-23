@@ -6,9 +6,11 @@ import {DicomBinaryBuffer as B,exportMonacoRtStruct} from '../src/utils/monacoRt
 import {parseDicomByteArray} from '../src/utils/dicomParser';
 import {createLibrary} from '../server/library.mjs';
 import {importRtStruct,compareContours} from '../src/utils/rtStructImporter';
+import {encodeLibrary} from '../src/utils/libraryClient';
 const root=path.resolve(process.env.IVCS_DEMO_DEST || 'build/release-common');await fs.mkdir(root,{recursive:true});
 const {series,studies,initialRois,registrationState}=createDemoRadiotherapyDataset();
-const plain=(v:any)=>JSON.parse(JSON.stringify(v,(_,x)=>x instanceof Int16Array || x instanceof Uint8Array?Array.from(x):x));
+// Use the same compact typed-array records as manual library saving.
+const plain=(v:any)=>JSON.parse(encodeLibrary(v));
 const library=createLibrary(path.join(root,'data'));
 if((await library.list()).patients.length)throw new Error('Release staging already contains cases; use a fresh staging directory.');
 const keys=[];for(const study of studies)keys.push((await library.putStudy(plain(study))).key);

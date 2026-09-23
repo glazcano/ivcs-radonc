@@ -1,3 +1,5 @@
+import {voxelDepth} from './geometry';
+import {maskGeometry,maskScale} from './segmentationGrid';
 import {REVISION_CODE} from '../appInfo';
 /** Local DICOM RTSTRUCT export. TPS compatibility must be verified with the supplied Monaco 6 protocol. */
 import { DicomSeries, DicomSlice, StructureRoi, RoiType } from '../types';
@@ -584,13 +586,14 @@ export function exportMonacoRtStruct(
       const mask = roi.sliceMasks[sliceIdx];
       const slice = sliceIndexToSlice.get(sliceIdx);
       if (!mask || !slice) continue;
+      if(mask.length!==slice.rows*slice.cols*maskScale(roi)**2)throw new Error('Invalid segmentation grid dimensions.');
 
       // Extract 2D polygon boundaries
-      const {loops:polygons2d}=exportLoops(mask,slice,pointToleranceMm,minContourAreaMm2,options.holeMode);
+      const {loops:polygons2d}=exportLoops(mask,maskGeometry(slice,maskScale(roi)),pointToleranceMm,minContourAreaMm2,options.holeMode);
 
       for (const poly2d of polygons2d) {
         // Convert to 3D Patient Coordinates
-        const poly3d: Point3D[] = poly2d.map(([c, r]) => pixelToPatientCoordinate(c, r, slice));
+        const poly3d: Point3D[] = poly2d.map(([c, r]) => pixelToPatientCoordinate(c, r, maskGeometry(slice,maskScale(roi))));
 
         // Filter micro-noise contours
         const areaMm2 = calculatePolygonAreaMm2(poly3d);
@@ -607,7 +610,7 @@ export function exportMonacoRtStruct(
           for(const value of pt){const decimal=Number(value.toFixed(6)).toString();coordStrings.push(decimal.length<=16?decimal:value.toExponential(8));}
         }
         const contourDataStr = coordStrings.join('\\');
-        if(contourDataStr.length>65534)throw new Error('Contorno demasiado complejo para DS explícito. Reduzca la complejidad antes de exportar.');
+        // DICOM PS3.5 permits UN for oversized explicit-VR Contour Data; never simplify silently.
 
         // Contour Image Sequence linking to exact CT slice
         const contourImageItemBuf = new DicomBinaryBuffer(128);
@@ -620,7 +623,7 @@ export function exportMonacoRtStruct(
         contourItemBuf.writeSequence(0x3006, 0x0016, [contourImageItemBuf.getBytes()]);
         contourItemBuf.writeStringElement(0x3006, 0x0042, 'CS', options.holeMode==='xor'?'CLOSEDPLANAR_XOR':'CLOSED_PLANAR');
         contourItemBuf.writeStringElement(0x3006, 0x0046, 'IS', numPoints.toString());
-        contourItemBuf.writeStringElement(0x3006, 0x0050, 'DS', contourDataStr);
+        contourItemBuf.writeStringElement(0x3006, 0x0050, contourDataStr.length>65534?'UN':'DS', contourDataStr);
 
         contourItems.push(contourItemBuf.getBytes());
         contourNumber++;
@@ -631,6 +634,16 @@ export function exportMonacoRtStruct(
     const roiContourBuf = new DicomBinaryBuffer(contourItems.length * 512 + 256);
     roiContourBuf.writeStringElement(0x3006, 0x002A, 'IS', hexToDicomColor(roi.color));
     roiContourBuf.writeStringElement(0x3006, 0x0084, 'IS', roiNumber.toString());
+    if(maskScale(roi)===2){
+      const first=maskGeometry(series.slices[0],2),grid=new DicomBinaryBuffer(512);
+      grid.writeStringElement(0x0028,0x0030,'DS',first.pixelSpacing.map(v=>Number(v.toFixed(6))).join('\\'));
+      grid.writeStringElement(0x0018,0x0088,'DS',String(Number(voxelDepth(series.slices,series.slices[0]).toFixed(6))));
+      grid.writeStringElement(0x0020,0x0037,'DS',first.imageOrientationPatient!.join('\\'));
+      grid.writeStringElement(0x0020,0x0032,'DS',first.imagePositionPatient!.map(v=>Number(v.toFixed(6))).join('\\'));
+      grid.writeStringElement(0x0028,0x0008,'IS',String(series.slices.length));
+      for(const [tag,value] of [[0x0010,first.rows],[0x0011,first.cols]]){if(value>65535)throw new Error('Segmentation grid exceeds DICOM Rows/Columns limits.');const bytes=new Uint8Array(2);new DataView(bytes.buffer).setUint16(0,value,true);grid.writeElement(0x0028,tag,'US',bytes);}
+      roiContourBuf.writeSequence(0x3006,0x004A,[grid.getBytes()]);
+    }
     if (contourItems.length > 0) {
       roiContourBuf.writeSequence(0x3006, 0x0040, contourItems);
     }

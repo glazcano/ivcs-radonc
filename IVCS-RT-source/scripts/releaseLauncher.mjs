@@ -10,8 +10,12 @@ function browser(){const command=process.platform==='win32'?'cmd.exe':process.pl
 const running=await identify(),ours=running?.folder && path.resolve(running.folder)===path.join(root,'data');
 if(process.argv[2]==='stop'){
  if(!ours){console.log('This IVCS RT instance is not running at '+url);process.exit(0);}
+ let lifecycle;try{const response=await fetch(url+'/api/application/status');if(response.ok)lifecycle=await response.json();}catch{}
+ if(lifecycle?.application==='IVCS RT' && lifecycle.shutdown){const response=await fetch(url+'/api/application/shutdown',{method:'POST',headers:{'Content-Type':'application/json','X-RadContour':'local'},body:JSON.stringify({token:lifecycle.token})});if(!response.ok)throw new Error('Shutdown request failed. Use Close application in IVCS RT.');console.log('IVCS RT is shutting down.');}
+ else {
  const pid=Number(readFileSync(path.join(runtime,'server.pid'),'utf8'));if(!Number.isInteger(pid) || pid<=0)throw new Error('Invalid process identifier');
  process.kill(pid);console.log('IVCS RT stopped.');
+ }
 }else{
  if(ours){browser();process.exit(0);}
  await new Promise((resolve,reject)=>{const test=net.createServer();test.once('error',()=>reject(new Error('Port '+port+' is occupied. Close the other application first.')));test.listen(port,'127.0.0.1',()=>test.close(resolve));});

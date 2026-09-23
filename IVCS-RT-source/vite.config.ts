@@ -1,3 +1,4 @@
+import {applicationLifecycle} from './server/application.mjs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -10,7 +11,7 @@ export default defineConfig(() => {
   const {credits,notices}=projectCredits();
   return {
     define:{__IVCS_REVISION__:JSON.stringify(revisionForDate()),__IVCS_CREDITS__:JSON.stringify(credits)},
-    plugins: [react(), tailwindcss(), {name:'project-notices',generateBundle(){this.emitFile({type:'asset',fileName:'third-party-notices.txt',source:notices});},configureServer(server){server.middlewares.use('/third-party-notices.txt',(_req,res)=>{res.setHeader('Content-Type','text/plain; charset=utf-8');res.end(notices);});}}, {name:'local-library', configureServer(server) { server.middlewares.use('/api/library', libraryRouter(path.resolve('data'))); }}],
+    plugins: [react(), tailwindcss(), {name:'project-notices',generateBundle(){this.emitFile({type:'asset',fileName:'third-party-notices.txt',source:notices});},configureServer(server){server.middlewares.use('/third-party-notices.txt',(_req,res)=>{res.setHeader('Content-Type','text/plain; charset=utf-8');res.end(notices);});}}, {name:'local-library', configureServer(server) { const lifecycle=applicationLifecycle(()=>server.close());server.middlewares.use('/api/application',lifecycle.router);server.middlewares.use(lifecycle.gate);server.middlewares.use('/api/library', libraryRouter(path.resolve('data'))); }}],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

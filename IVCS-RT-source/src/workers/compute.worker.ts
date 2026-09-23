@@ -1,3 +1,4 @@
+import {roiAtScale,maskScale} from '../utils/segmentationGrid';
 import {automaticRigid3d} from '../utils/rigid3d';
 import {exportMonacoRtStruct} from '../utils/monacoRtStructExporter';
 import {importRtStruct,compareContours} from '../utils/rtStructImporter';
@@ -29,13 +30,14 @@ self.onmessage=async({data})=>{
     }
     else if(kind==='registration')result=automaticRigid3d(args[0],args[1],args[2],p=>self.postMessage({progress:p}),args[3]);
     else if(kind==='body')result=await contour.generateBodyVolumeForSeries(args[0],args[1],(current,total)=>self.postMessage({progress:{current,total,percent:Math.round(current/total*100)}}));
+    else if(kind==='upgradeMask')result=roiAtScale(args[0],args[1],2);
     else if(kind==='export'){
       result=exportMonacoRtStruct(args[0],args[1],args[2]);
-      const restored=importRtStruct(new Uint8Array(await result.blob.arrayBuffer()),args[0]);
+      const restored=importRtStruct(new Uint8Array(await result.blob.arrayBuffer()),args[0],args[1].some(r=>maskScale(r)===2)?2:1);
       const selected=args[1].filter(r=>(!args[2]?.onlyVisibleRois || r.visible) && Object.values(r.sliceMasks).some((m:any)=>m.some(v=>v)));
       result.comparison=compareContours(selected,restored,args[0]);
       result.reconstructed=restored;
-    }else if(kind==='importRT')result=importRtStruct(args[0],args[1]);
+    }else if(kind==='importRT')result=importRtStruct(args[0],args[1],args[2]||1);
     else if(typeof contour[kind]==='function')result=await contour[kind](...args);
     else throw new Error('Operación no disponible.');
     self.postMessage({result});

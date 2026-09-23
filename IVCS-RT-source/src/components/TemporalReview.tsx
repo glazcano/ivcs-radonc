@@ -38,11 +38,11 @@ export function TemporalReview({series,sliceIndex,center,width,rois,onUnion,onCl
     const current=image.seriesInstanceUID===series.seriesInstanceUID && image.acquisitionKey===series.acquisitionKey;
     const matches=(current?rois:state?.rois || []).filter((r:StructureRoi)=>r.name===roiName);
     if(matches.length!==1 || !Object.values(matches[0].sliceMasks).some((m:any)=>m.some((v:number)=>v)))throw new Error(tr('Cada fase debe tener exactamente una estructura no vacía con el nombre seleccionado. Guarde los contornos de las otras fases primero.'));
-    template=matches[0];const masks=unionPhaseMasks(series,[{series:image,roi:template!}]);
+    template=matches[0];const masks=unionPhaseMasks(series,[{series:image,roi:template!}],2);
     for(const [z,mask] of Object.entries(masks)){const dst=combined[z] ||= new Uint8Array(mask.length);for(let i=0;i<mask.length;i++)dst[i] ||= mask[i];}
     await new Promise(resolve=>setTimeout(resolve,0));
    }
-   if(template && id===request.current){onUnion({...template,id:crypto.randomUUID(),name:'ITV candidate · '+roiName,locked:false,sliceMasks:combined,volumeCm3:undefined});onClose();}
+   if(template && id===request.current){onUnion({...template,id:crypto.randomUUID(),name:'ITV candidate · '+roiName,locked:false,maskScale:2,sliceMasks:combined,volumeCm3:undefined});onClose();}
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}
  };
  const selected=entries.find(e=>e.key===keys[phase]);

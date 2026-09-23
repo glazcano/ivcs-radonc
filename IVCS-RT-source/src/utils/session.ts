@@ -1,3 +1,4 @@
+import {maskScale} from './segmentationGrid';
 import { DicomSeries, ImageStudy, StructureRoi, RegistrationState } from '../types';
 import {acquisitionGeometry} from './volumeSampling';
 import { validateVolume } from './geometry';
@@ -43,10 +44,11 @@ export function validateSessionObject(s:any):Session {
   const ids = new Set();
   for (const roi of s.rois) {
     if (!roi || typeof roi.id !== 'string' || ids.has(roi.id) || typeof roi.name !== 'string' || !['GTV','CTV','PTV','OAR','EXTERNAL','PRV','SUPPORT','AVOIDANCE'].includes(roi.type) || !/^#[0-9a-f]{6}$/i.test(roi.color) || typeof roi.visible !== 'boolean' || typeof roi.locked !== 'boolean' || !Number.isFinite(roi.opacity) || roi.opacity < 0 || roi.opacity > 1 || !roi.sliceMasks || typeof roi.sliceMasks !== 'object') throw new Error('Estructura inválida en la sesión.');
+    if(roi.maskScale!==undefined && roi.maskScale!==1 && roi.maskScale!==2)throw new Error('Unsupported segmentation resolution.');
     ids.add(roi.id);
     for (const [key,mask] of Object.entries(roi.sliceMasks) as [string,any][]) {
       const slice = s.series.slices[Number(key)];
-      if (!/^\d+$/.test(key) || !slice || !(Array.isArray(mask) || mask instanceof Uint8Array) || mask.length !== slice.rows*slice.cols || !mask.every(v=>v===0 || v===1)) throw new Error('Máscara inválida en la sesión.');
+      if (!/^\d+$/.test(key) || !slice || !(Array.isArray(mask) || mask instanceof Uint8Array) || mask.length !== slice.rows*slice.cols*maskScale(roi)**2 || !mask.every(v=>v===0 || v===1)) throw new Error('Máscara inválida en la sesión.');
       if(Array.isArray(mask))roi.sliceMasks[key] = new Uint8Array(mask);
     }
   }

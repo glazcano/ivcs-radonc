@@ -1,6 +1,8 @@
 export type RoiType = 'GTV' | 'CTV' | 'PTV' | 'OAR' | 'EXTERNAL' | 'PRV' | 'SUPPORT' | 'AVOIDANCE';
 
 export interface StructureRoi {
+  /** Missing means legacy 1×. X/Y only; axial planes and DICOM references are unchanged. */
+  maskScale?: 1 | 2;
   favorite?: boolean;
   id: string;
   name: string;
