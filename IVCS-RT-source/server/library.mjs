@@ -5,9 +5,13 @@ import express from 'express';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gzip, gunzip } from 'node:zlib';
+import {promisify} from 'node:util';
 import JSZip from 'jszip';
 import dicomParser from 'dicom-parser';
+
+// Library reads/writes await one codec operation at a time inside the shared queue.
+const compress=promisify(gzip),decompress=promisify(gunzip);
 
 const keyOf = value => createHash('sha256').update(value).digest('hex');
 const empty = () => ({version:1, patients:[], latest:null});
@@ -53,12 +57,14 @@ export function createLibrary(root) {
     throw Object.assign(new Error('Estudio no encontrado.'),{status:404});
   };
   const folder=(_patient,study)=>compactFolder(study.key);
-  const readState=async(patient,study,hydrate=true)=> {
+  const readState=async(patient,study,hydrate=true,signal)=> {
+    signal?.throwIfAborted();
     if(!study.state)return null;
-    const state=JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,study),study.state))));
+    const state=JSON.parse(await decompress(await fs.readFile(path.join(folder(patient,study),study.state))));
     if(hydrate)for(const roi of state.rois)for(const [z,mask] of Object.entries(roi.sliceMasks || {}))if(mask?.maskFile){
+      signal?.throwIfAborted();
       if(!/^[a-f0-9]{64}$/.test(mask.maskFile))throw new Error('Referencia de máscara inválida.');
-      roi.sliceMasks[z]=JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,study),'masks',mask.maskFile+'.json.gz'))));
+      roi.sliceMasks[z]=JSON.parse(await decompress(await fs.readFile(path.join(folder(patient,study),'masks',mask.maskFile+'.json.gz'))));
     }
     return state;
   };
@@ -104,13 +110,13 @@ export function createLibrary(root) {
       const bytes=Buffer.from(JSON.stringify(study));
       // Re-import is idempotent and must never replace existing contours.
       if(existing) {
-        const original=JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,existing),'images.json.gz'))));
+        const original=JSON.parse(await decompress(await fs.readFile(path.join(folder(patient,existing),'images.json.gz'))));
         const signature=s=>{const images=v=>v?.slices.map(x=>[x.sopInstanceUID,x.rows,x.cols,x.imagePositionPatient,x.huData]);return JSON.stringify([images(s),s.sourceVolume?[s.sourceVolume.seriesInstanceUID,s.sourceVolume.frameOfReferenceUID,images(s.sourceVolume)]:null]);};
         if(signature(original)!==signature(study))throw new Error('La serie ya existe con imágenes diferentes; no se reemplazó.');
         return {key};
       }
       const entry={key,id:study.id,acquisitionDimensions:study.acquisitionDimensions,frameOfReferenceUID:study.frameOfReferenceUID,sourceSeriesUID:study.sourceVolume?.seriesInstanceUID,acquisitionKey:study.acquisitionKey,seriesInstanceUID:study.seriesInstanceUID,studyInstanceUID:study.studyInstanceUID,description:study.seriesDescription || '',studyDescription:study.studyDescription || '',modality:study.modality,date:study.studyDate || study.date || '',slices:study.slices.length,state:null,originals:0};
-      await atomic(path.join(folder(patient,entry),'images.json.gz'),gzipSync(bytes));
+      await atomic(path.join(folder(patient,entry),'images.json.gz'),await compress(bytes));
       patient.studies.push(entry);patient.name=study.patientName || patient.name;
       await commit(index);return {key};
     }),
@@ -122,20 +128,21 @@ export function createLibrary(root) {
       if(!payload.state || !Array.isArray(payload.state.rois))throw new Error('Sesión inválida.');
       const previous=await readState(patient,study,false);
       const state={...payload.state,rois:[]};
+      const previousRois=new Map((previous?.rois || []).map(r=>[r.id,r]));
       for(const roi of payload.state.rois){
         const masks={};
         for(const [z,value] of Object.entries(roi.sliceMasks || {})){
           let mask=value;
-          if(mask?.unchanged){mask=previous?.rois.find(r=>r.id===roi.id)?.sliceMasks?.[z];if(!mask)throw new Error('La máscara base ya no existe.');}
+          if(mask?.unchanged){mask=previousRois.get(roi.id)?.sliceMasks?.[z];if(!mask)throw new Error('La máscara base ya no existe.');}
           if(mask?.maskFile){masks[z]=mask;continue;}
           const bytes=Buffer.from(JSON.stringify(mask)),hash=keyOf(bytes),file=path.join(folder(patient,study),'masks',hash+'.json.gz');
-          try{await fs.access(file);}catch{await atomic(file,gzipSync(bytes));}
+          try{await fs.access(file);}catch{await atomic(file,await compress(bytes));}
           masks[z]={maskFile:hash};
         }
         state.rois.push({...roi,sliceMasks:masks});
       }
       const name='state-'+randomUUID()+'.json.gz';
-      await atomic(path.join(folder(patient,study),name),gzipSync(Buffer.from(JSON.stringify({...state,studyKeys:keys}))));
+      await atomic(path.join(folder(patient,study),name),await compress(Buffer.from(JSON.stringify({...state,studyKeys:keys}))));
       const expired=study.previousState;
       study.previousState=study.state;study.state=name;study.updatedAt=new Date().toISOString();index.latest=study.key;
       await commit(index);
@@ -144,7 +151,7 @@ export function createLibrary(root) {
       try {
         const used=new Set();
         for(const revision of [study.state,study.previousState].filter(Boolean)){
-          const retained=JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,study),revision))));
+          const retained=JSON.parse(await decompress(await fs.readFile(path.join(folder(patient,study),revision))));
           for(const roi of retained.rois)for(const m of Object.values(roi.sliceMasks || {}))if(m?.maskFile)used.add(m.maskFile);
         }
         const dir=path.join(folder(patient,study),'masks');
@@ -152,11 +159,15 @@ export function createLibrary(root) {
       }catch{}
       return {saved:true,revision:name};
     }),
-    open:async(key,selectedOnly=false)=> {
+    // Hydrate inside the same queue as save/cleanup: no referenced file can expire mid-read.
+    open:(key,selectedOnly=false,signal=undefined)=>mutate(async()=> {
+      signal?.throwIfAborted();
       const index=await read(), {patient,study}=locate(index,key);
-      const assets=async entry=>JSON.parse(gunzipSync(await fs.readFile(path.join(folder(patient,entry),'images.json.gz'))));
-      const state=await readState(patient,study);
+      const assets=async entry=>JSON.parse(await decompress(await fs.readFile(path.join(folder(patient,entry),'images.json.gz'))));
+      const state=await readState(patient,study,true,signal);
+      signal?.throwIfAborted();
       const selected=await assets(study);
+      signal?.throwIfAborted();
       // Other phases and secondary images are loaded on demand from the library.
       const studies=[selected];
       if(state?.registrationState){
@@ -167,7 +178,7 @@ export function createLibrary(root) {
         if(r.relationPolicies)r.relationPolicies=Object.fromEntries(Object.entries(r.relationPolicies).filter(([id])=>ids.has(id)));
       }
       return {selected,studies,state,revision:study.state};
-    },
+    }),
     exportOriginals:async(key)=> {
       const {patient,study}=locate(await read(),key),dir=path.join(folder(patient,study),'dicom'),zip=new JSZip();
       const names=await fs.readdir(dir).catch(e=>{if(e.code==='ENOENT')return [];throw e;});
@@ -237,7 +248,13 @@ export function libraryRouter(root) {
   router.get('/',run(()=>library.list()));
   router.get('/translations',run(()=>readTranslations()));
   router.get('/settings',run(()=>library.settings()));
-  const studyResponse=async(req,res)=>{try{const study=await library.open(req.params.key,true);if(req.headers.accept?.includes('application/x-ndjson'))await sendStudyStream(res,study);else res.json(study);}catch(e){if(res.headersSent)res.destroy();else res.status(e.status || 400).json({error:e.message});}};
+  const studyResponse=async(req,res)=>{
+    const controller=new AbortController(),abort=()=>controller.abort();
+    req.once('aborted',abort);res.once('close',abort);if(req.aborted)abort();
+    try{const study=await library.open(req.params.key,true,controller.signal);controller.signal.throwIfAborted();if(req.headers.accept?.includes('application/x-ndjson'))await sendStudyStream(res,study);else res.json(study);}
+    catch(e){if(res.destroyed)return;if(res.headersSent)res.destroy();else res.status(e.status || 400).json({error:e.message});}
+    finally{req.off('aborted',abort);res.off('close',abort);}
+  };
   router.get('/study/:key',studyResponse);
   router.get('/export/:key',studyResponse);
   router.get('/originals/:key',async(req,res)=>{try{res.type('application/zip').send(await library.exportOriginals(req.params.key));}catch(e){res.status(400).json({error:e.message});}});
