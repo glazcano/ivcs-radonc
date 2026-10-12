@@ -4,6 +4,14 @@
 
 Simple radiotherapy contouring software for local use
 
+## Source and development
+
+The application source is in [`IVCS-RT-source/`](IVCS-RT-source/). Run development,
+build and test commands from that directory; see its [development guide](IVCS-RT-source/README.md).
+The repository's GitHub Actions workflow is in `.github/workflows/ci.yml` and
+checks the source on Linux, Windows and macOS. The workflow inside
+`IVCS-RT-source/.github/` is included in standalone source exports.
+
 # Quickstart
 Download a release, unzip, run the Start script (For example: Start.cmd for Windows). A local server will start and the software should open in your default browser.
 
