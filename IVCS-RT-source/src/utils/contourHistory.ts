@@ -12,3 +12,20 @@ export function trimContourHistory(states:StructureRoi[][],budget=256*1024*1024,
   }
   return states.slice(start);
 }
+
+/** One budget for both timelines; live masks add no memory retained by history. */
+export function trimContourTimelines(undo:StructureRoi[][],redo:StructureRoi[][],active:StructureRoi[],budget=256*1024*1024,maxStates=50){
+ const seen=new Set<ArrayBufferLike>();
+ for(const roi of active)for(const mask of Object.values(roi.sliceMasks))seen.add(mask.buffer);
+ let bytes=0;const stacks=[undo,redo],starts=stacks.map(s=>s.length),stopped=[false,false];
+ for(let depth=1;depth<=maxStates && !stopped.every(Boolean);depth++)for(let side=0;side<2;side++){
+  if(stopped[side])continue;const index=stacks[side].length-depth;
+  if(index<0){stopped[side]=true;continue;}
+  const added=new Set<ArrayBufferLike>();
+  for(const roi of stacks[side][index])for(const mask of Object.values(roi.sliceMasks))if(!seen.has(mask.buffer))added.add(mask.buffer);
+  const cost=[...added].reduce((n,b)=>n+b.byteLength,0);
+  if(bytes+cost>budget){stopped[side]=true;continue;}
+  added.forEach(b=>seen.add(b));bytes+=cost;starts[side]=index;
+ }
+ return {undo:starts[0]===0?undo:undo.slice(starts[0]),redo:starts[1]===0?redo:redo.slice(starts[1])};
+}

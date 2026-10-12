@@ -3,7 +3,7 @@ import {maskGeometry,maskScale,maskSeries,roiAtScale,rescaleMask,type MaskScale}
 import {VolumeCleanupModal} from './components/VolumeCleanupModal';
 import {Detachable} from './components/Detachable';
 import {sessionRecords,readSessionFile,saveChunks} from './utils/sessionStream';
-import {trimContourHistory} from './utils/contourHistory';
+import {trimContourTimelines} from './utils/contourHistory';
 import {selectBodyReplacement} from './utils/bodyAlgorithms';
 import {tr,useLanguage} from './i18n';
 import {defaultShortcuts,validShortcuts} from './utils/shortcuts';
@@ -215,22 +215,25 @@ export default function App() {
     setIsLoading(true); setLoadingMessage(tr("Abriendo estudio local…"));
     try {
       await confirmLeave();
-      const saved = await openLibraryStudy(key);
+      const controller=new AbortController();operationAbort.current=controller;
+      setLoadingMessage(tr('Abriendo estudio local…')+' 0 MiB');let lastProgress=0;
+      const readOptions={signal:controller.signal,onProgress:(bytes:number)=>{const now=performance.now();if(now-lastProgress>=100){lastProgress=now;setLoadingMessage(tr('Abriendo estudio local…')+' '+Math.round(bytes/1048576)+' MiB');}}};
+      const saved = await openLibraryStudy(key,readOptions);
       if (group) {
-        const index = await libraryIndex();
+        const index = await libraryIndex(readOptions);
         const patient = index.patients.find(p=>p.studies.some(s=>s.key===key))!;
         const secondary = patient.studies.find(s=>s.key===group.members.find(k=>k!==key));
         const transforms = {};
         for (const [k,t] of Object.entries(group.transforms)) {
           const study = patient.studies.find(s=>s.key===k); if (study) transforms[study.id]=t;
         }
-        if(secondary && !saved.studies.some(s=>s.id===secondary.id))saved.studies.push(await loadSecondaryStudy(secondary.key));
+        if(secondary && !saved.studies.some(s=>s.id===secondary.id))saved.studies.push(await loadSecondaryStudy(secondary.key,readOptions));
         if(Object.values(transforms).some((t:any)=>t.model!=='rigid3d'))throw new Error('Este grupo utiliza el antiguo corregistro 2D. Abra las series y cree una alineación 3D nueva.');
         saved.registrationState = {...saved.registrationState,active:true,transforms,detachedSeriesIds:group.detachedSeriesIds,relationPolicies:group.relationPolicies,secondaryStudyId:secondary?.id || saved.registrationState.referenceStudyId};
       }
-      applySession(saved); setErrorMessage(null);
+      controller.signal.throwIfAborted();applySession(saved); setErrorMessage(null);
     } catch(e) {setErrorMessage((e as Error).message);throw e;}
-    finally {setIsLoading(false);}
+    finally {setIsLoading(false);operationAbort.current=null;}
   };
   const handleOpenSession = async (file: File) => {
     setIsLoading(true);setLoadingMessage(tr("Importando sesión a la biblioteca…"));
@@ -299,9 +302,16 @@ export default function App() {
     }catch(e){setErrorMessage((e as Error).message);setIsLoading(false);}
   };
 
+  // Trim after the committed edit: only additional buffers retained by either timeline count.
+  useEffect(()=>{
+    const trimmed=trimContourTimelines(undoStack,redoStack,rois);
+    if(trimmed.undo!==undoStack)setUndoStack(trimmed.undo);
+    if(trimmed.redo!==redoStack)setRedoStack(trimmed.redo);
+  },[rois,undoStack,redoStack]);
+
   // Shared immutable masks; cap unique history buffers as well as state count.
   const pushUndo = useCallback(() => {
-    setUndoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
+    setUndoStack(prev => [...prev, snapshotRois(rois)]);
     setRedoStack([]);
   }, [rois, snapshotRois]);
 
@@ -309,7 +319,7 @@ export default function App() {
   const handleUndo = () => {
     if (undoStack.length === 0) return;
     const previous = undoStack[undoStack.length - 1];
-    setRedoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
+    setRedoStack(prev => [...prev, snapshotRois(rois)]);
     setRois(previous);
     setActiveRoiId(id=>previous.some(r=>r.id===id)?id:previous[0]?.id || null);
     setUndoStack(prev => prev.slice(0, prev.length - 1));
@@ -319,7 +329,7 @@ export default function App() {
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
-    setUndoStack(prev => trimContourHistory([...prev, snapshotRois(rois)]));
+    setUndoStack(prev => [...prev, snapshotRois(rois)]);
     setRois(next);
     setActiveRoiId(id=>next.some(r=>r.id===id)?id:next[0]?.id || null);
     setRedoStack(prev => prev.slice(0, prev.length - 1));
@@ -998,7 +1008,7 @@ export default function App() {
           <div className="absolute inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-50">
             <div className="bg-[#111112] border border-[#262626] p-5 rounded-lg shadow-2xl flex items-center gap-3 text-[#E2E2E2]">
               <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
-              <span className="text-xs font-mono">{" "}{tr(loadingMessage)}{" "}</span>{operationAbort.current && <button className="text-xs border rounded p-2" onClick={()=>operationAbort.current?.abort()}>{" "}{tr("Cancelar cálculo")}{" "}</button>}
+              <span className="text-xs font-mono">{" "}{tr(loadingMessage)}{" "}</span>{operationAbort.current && <button className="text-xs border rounded p-2" onClick={()=>operationAbort.current?.abort()}>{" "}{tr("Cancelar")}{" "}</button>}
             </div>
           </div>
         )}

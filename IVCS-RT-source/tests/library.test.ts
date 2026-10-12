@@ -136,3 +136,42 @@ test('high resolution library masks retain scale and compressed bytes across met
  await library.save({key,studyKeys:[key],expectedRevision:first.revision,state:{rois:[{...roi,name:'Renamed HR',sliceMasks:{0:{unchanged:true}}}]}});
  const restored=decodeLibrary(JSON.stringify((await library.open(key)).state));assert.equal(restored.rois[0].maskScale,2);assert.deepEqual(restored.rois[0].sliceMasks[0],mask);assert.deepEqual(await fs.readFile(path.join(dir,files[0])),before);assert.equal((await fs.readdir(dir)).length,1);
 }));
+
+test('opening a revision excludes cleanup until its masks are hydrated',()=>withLibrary(async(library,root)=>{
+ const {key}=await library.putStudy(study('SYNTHETIC-CONCURRENT','1.9'));
+ const save=(value:number)=>library.save({key,studyKeys:[key],state:{rois:[{id:'roi',sliceMasks:{0:[value,0,0,0]}}]}});
+ const first=await save(1);const originalRead=fs.readFile;
+ let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>entered=r);let held=false;
+ fs.readFile=(async(file:any,...args:any[])=>{
+  const bytes=await (originalRead as any).call(fs,file,...args);
+  if(String(file)===path.join(root,'s',key.slice(0,24),first.revision) && !held){held=true;entered();await gate;}
+  return bytes;
+ }) as any;
+ try{
+  const opening=library.open(key);await waiting;
+  let completed=false;const saves=Promise.all([save(2),save(3)]).then(()=>{completed=true;});
+  await new Promise(r=>setTimeout(r,20));assert.equal(completed,false);
+  release();const opened=await opening;await saves;
+  assert.equal(opened.revision,first.revision);assert.deepEqual(opened.state.rois[0].sliceMasks[0],[1,0,0,0]);
+  assert.deepEqual((await library.open(key)).state.rois[0].sliceMasks[0],[3,0,0,0]);
+ }finally{release();fs.readFile=originalRead;}
+}));
+
+test('cancelled library opening releases the queue for subsequent saves',()=>withLibrary(async library=>{
+ const {key}=await library.putStudy(study('SYNTHETIC-ABORT','1.8'));
+ const controller=new AbortController();controller.abort();
+ await assert.rejects(library.open(key,true,controller.signal),{name:'AbortError'});
+ const saved=await library.save({key,studyKeys:[key],expectedRevision:null,state:{rois:[]}});
+ assert.equal((await library.open(key)).revision,saved.revision);
+}));
+
+test('library encoding preserves typed subarrays with native and fallback base64',()=>{
+ const bytes=new Uint8Array([9,1,2,3,8]),value={mask:bytes.subarray(1,4)};
+ const expected='{"mask":{"array":"u8","base64":"AQID"}}';
+ const prototype=Uint8Array.prototype as any,original=Object.getOwnPropertyDescriptor(prototype,'toBase64');
+ try{
+  Object.defineProperty(prototype,'toBase64',{configurable:true,value:undefined});assert.equal(encodeLibrary(value),expected);
+  Object.defineProperty(prototype,'toBase64',{configurable:true,value:function(){return Buffer.from(this).toString('base64');}});assert.equal(encodeLibrary(value),expected);
+  assert.deepEqual(decodeLibrary(encodeLibrary(value)),value);
+ }finally{if(original)Object.defineProperty(prototype,'toBase64',original);else delete prototype.toBase64;}
+});

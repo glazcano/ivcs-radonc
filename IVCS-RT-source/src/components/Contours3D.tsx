@@ -1,3 +1,4 @@
+import {sameSurfaceInputs} from '../utils/surfaceInputs';
 import {maskGeometry,maskScale} from '../utils/segmentationGrid';
 import React,{useEffect,useRef,useState} from 'react';
 import * as THREE from 'three';
@@ -9,6 +10,7 @@ import {ContourCompositor} from '../utils/contourCompositor';
 export default function Contours3D({series,rois,activeRoiId}:{series:DicomSeries;rois:StructureRoi[];activeRoiId?:string}){
  const host=useRef<HTMLDivElement>(null),sceneRef=useRef<any>(null),[onlyActive,setOnlyActive]=useState(false),[opacity,setOpacity]=useState(.8),[busy,setBusy]=useState(false),[error,setError]=useState(''),[visible,setVisible]=useState(!document.hidden);
  const relevant=rois.filter(r=>r.visible && (!onlyActive || r.id===activeRoiId));const latest=useRef(relevant);latest.current=relevant;const opacityRef=useRef(opacity);opacityRef.current=opacity;
+ const inputs=useRef(relevant);if(!sameSurfaceInputs(inputs.current,relevant))inputs.current=relevant;const geometryInputs=inputs.current;
  useEffect(()=>{const update=()=>setVisible(!document.hidden);document.addEventListener('visibilitychange',update);return()=>document.removeEventListener('visibilitychange',update);},[]);
  useEffect(()=>{
   const el=host.current!;let renderer:THREE.WebGLRenderer;
@@ -27,19 +29,38 @@ export default function Contours3D({series,rois,activeRoiId}:{series:DicomSeries
   return()=>{disposed=true;cancelAnimationFrame(raf);observer.disconnect();controls.dispose();for(const name of ['pointermove','pointerdown','pointerup','wheel'])renderer.domElement.removeEventListener(name,invalidate);meshes.children.forEach((m:any)=>{m.geometry.dispose();m.material.dispose();});compositor.dispose();renderer.dispose();renderer.forceContextLoss();renderer.domElement.remove();sceneRef.current=null;};
  },[series]);
  useEffect(()=>{
-  if(!visible || !sceneRef.current)return;let worker:Worker|undefined,cancelled=false;setBusy(true);setError('');
+  if(!visible || !sceneRef.current)return;const state=sceneRef.current;
+  const dispose=(child:any)=>{child.geometry.dispose();child.material.dispose();state.meshes.remove(child);};
+  for(const child of [...state.meshes.children])if(!geometryInputs.some(r=>r.id===child.userData.roiId))dispose(child);
+  // Keep one surface per displayed ROI; no cache of removed/hidden geometries.
+  const dirty=geometryInputs.filter(r=>!state.meshes.children.some((m:any)=>m.userData.roiId===r.id && m.userData.masks===r.sliceMasks && m.userData.scale===maskScale(r)));
+  if(!dirty.length){setBusy(false);state.invalidate();return;}
+  let worker:Worker|undefined,cancelled=false;setBusy(true);setError('');
   const timer=setTimeout(()=>{
-   const s=series.slices[0];worker=new Worker(new URL('../workers/surface.worker.ts',import.meta.url),{type:'module'});
-   worker.onmessage=e=>{if(cancelled)return;setBusy(false);if(e.data.error){setError(e.data.error);return;}const state=sceneRef.current;if(!state)return;
-    for(const child of [...state.meshes.children]){child.geometry.dispose();child.material.dispose();state.meshes.remove(child);}
-    for(const m of e.data.meshes){if(!m.positions.length)continue;const roi=latest.current.find(r=>r.id===m.id);if(!roi)continue;const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(m.positions,3));geometry.setAttribute('normal',new THREE.BufferAttribute(m.normals,3));const material=new THREE.MeshStandardMaterial({color:roi.color,side:THREE.DoubleSide,roughness:.75,transparent:false,opacity:1,depthWrite:true});const mesh=new THREE.Mesh(geometry,material);mesh.userData.roiId=m.id;state.meshes.add(mesh);}
-    if(!state.hasFit && state.meshes.children.length){state.fit();state.hasFit=true;}state.invalidate();worker?.terminate();
-   };
-   worker.onerror=e=>{setBusy(false);setError(e.message);worker?.terminate();};
-   worker.postMessage({geometry:{cols:s.cols,rows:s.rows,depth:series.slices.length,spacing:[s.pixelSpacing[1],s.pixelSpacing[0],voxelDepth(series.slices,s)],origin:s.imagePositionPatient},items:relevant.map(r=>{const g=maskGeometry(s,maskScale(r));return {id:r.id,masks:r.sliceMasks,geometry:{cols:g.cols,rows:g.rows,spacing:[g.pixelSpacing[1],g.pixelSpacing[0],voxelDepth(series.slices,s)],origin:g.imagePositionPatient}};})});
+   const stop=()=>{worker?.terminate();worker=undefined;};
+   try{
+    const s=series.slices[0];worker=new Worker(new URL('../workers/surface.worker.ts',import.meta.url),{type:'module'});
+    worker.onmessage=e=>{
+     if(cancelled){stop();return;}
+     try{
+      if(e.data.error)throw new Error(e.data.error);
+      if(sceneRef.current!==state)return;
+      for(const m of e.data.meshes){
+       const source=dirty.find(r=>r.id===m.id),roi=latest.current.find(r=>r.id===m.id);if(!source || !roi)continue;
+       for(const child of [...state.meshes.children])if(child.userData.roiId===m.id)dispose(child);
+       const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(m.positions,3));geometry.setAttribute('normal',new THREE.BufferAttribute(m.normals,3));
+       const material=new THREE.MeshStandardMaterial({color:roi.color,side:THREE.DoubleSide,roughness:.75,transparent:false,opacity:1,depthWrite:true});
+       const mesh=new THREE.Mesh(geometry,material);mesh.userData={roiId:m.id,masks:source.sliceMasks,scale:maskScale(source)};state.meshes.add(mesh);
+      }
+      if(!state.hasFit && state.meshes.children.some((m:any)=>m.geometry.attributes.position.count)){state.fit();state.hasFit=true;}state.invalidate();
+     }catch(e){setError((e as Error).message);}finally{setBusy(false);stop();}
+    };
+    worker.onerror=e=>{if(!cancelled){setBusy(false);setError(e.message);}stop();};
+    worker.postMessage({geometry:{cols:s.cols,rows:s.rows,depth:series.slices.length,spacing:[s.pixelSpacing[1],s.pixelSpacing[0],voxelDepth(series.slices,s)],origin:s.imagePositionPatient},items:dirty.map(r=>{const g=maskGeometry(s,maskScale(r));return {id:r.id,masks:r.sliceMasks,geometry:{cols:g.cols,rows:g.rows,spacing:[g.pixelSpacing[1],g.pixelSpacing[0],voxelDepth(series.slices,s)],origin:g.imagePositionPatient}};})});
+   }catch(e){setBusy(false);setError((e as Error).message);stop();}
   },200);
   return()=>{cancelled=true;clearTimeout(timer);worker?.terminate();};
- },[series,rois,onlyActive,activeRoiId,visible]);
+ },[series,geometryInputs,visible]);
  useEffect(()=>{const state=sceneRef.current;if(!state)return;state.meshes.children.forEach((m:any)=>{const roi=relevant.find(r=>r.id===m.userData.roiId);m.visible=!!roi;if(roi)m.material.color.set(roi.color);});state.invalidate();},[opacity,rois,onlyActive,activeRoiId]);
  return <div className="flex flex-col flex-1 min-h-0" data-testid="contours-3d"><div className="flex gap-2 items-center px-2 text-xs flex-wrap"><label><input type="checkbox" checked={onlyActive} onChange={e=>setOnlyActive(e.target.checked)}/>{tr('Solo ROI seleccionada')}</label><label>{tr('Opacidad 3D')}<input aria-label={tr('Opacidad 3D')} type="range" min="0" max="1" step=".05" value={opacity} onChange={e=>setOpacity(Number(e.target.value))}/><span className="inline-block w-9 text-right tabular-nums">{Math.round(opacity*100)}%</span></label><button onClick={()=>sceneRef.current?.fit()}>{tr('Restablecer vista 3D')}</button></div><div className="text-xs px-2 text-zinc-400">{tr('Arrastrar: rotar · Rueda: zoom · Botón derecho: desplazar')}{busy?' · '+tr('Calculando superficie…'):''}</div>{error && <p role="alert" className="text-amber-300 text-xs px-2">{tr(error)}</p>}{!relevant.length && <p className="text-xs px-2">{tr('No hay contornos visibles.')}</p>}<div ref={host} className="flex-1 min-h-0 overflow-hidden touch-none"/></div>;
 }
