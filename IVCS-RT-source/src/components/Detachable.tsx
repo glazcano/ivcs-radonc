@@ -3,7 +3,7 @@ import {createPortal} from 'react-dom';
 import {tr} from '../i18n';
 
 /** One React tree and one session, even when a panel lives on another monitor. */
-export function Detachable({children, title, id, enabled=true}: {children:React.ReactNode;title:string;id:string;enabled?:boolean}) {
+export function Detachable({children, title, id, enabled=true}: {children:React.ReactNode|((action:React.ReactNode)=>React.ReactNode);title:string;id:string;enabled?:boolean}) {
   const child = useRef<Window|null>(null);
   const [target,setTarget]=useState<HTMLElement|null>(null);
   const [error,setError]=useState(false);
@@ -33,7 +33,10 @@ export function Detachable({children, title, id, enabled=true}: {children:React.
     // Fit the image only after CSS has established the actual popup viewport.
     void Promise.all(styles).then(()=>{if(child.current===w && !w.closed)setTarget(root);});
   };
-  const content=<div className="flex flex-col flex-1 min-h-0 min-w-0 h-full"><div className="flex items-center justify-between gap-2 bg-zinc-950 text-xs px-2 py-1 shrink-0"><span>{title}</span><button data-testid={target?`dock-${id}`:`detach-${id}`} onClick={target?dock:detach}>{tr(target?'Acoplar':'Desacoplar')} ↗</button></div>{error&&<p role="alert">{tr('Permita ventanas emergentes para desacoplar el panel.')}</p>}<div className="flex flex-1 min-h-0 min-w-0">{children}</div></div>;
-  if(!enabled)return <>{children}</>;
+  const action=enabled?<button type="button" className="shrink-0 min-w-8 h-8 rounded hover:bg-zinc-800 text-xs" data-testid={target?`dock-${id}`:`detach-${id}`} aria-label={`${tr(target?'Acoplar':'Desacoplar')} · ${title}`} title={`${tr(target?'Acoplar':'Desacoplar')} · ${title}`} onClick={target?dock:detach}>{target?'↙':'↗'}</button>:null;
+  const inline=typeof children==='function';
+  const body=inline?children(action):children;
+  const content=<div className="flex flex-col flex-1 min-h-0 min-w-0 h-full">{!inline&&<div className="flex items-center justify-between gap-2 bg-zinc-950 text-xs px-2 py-1 shrink-0"><span>{title}</span>{action}</div>}{error&&<p role="alert">{tr('Permita ventanas emergentes para desacoplar el panel.')}</p>}<div className="flex flex-1 min-h-0 min-w-0">{body}</div></div>;
+  if(!enabled)return <>{body}</>;
   return target?<><div className="p-2 text-xs bg-zinc-950"><button data-testid={`restore-${id}`} onClick={dock}>{title} · {tr('Acoplar')}</button></div>{createPortal(content,target)}</>:content;
 }

@@ -1,16 +1,45 @@
 import test from 'node:test';import assert from 'node:assert/strict';import express from 'express';import {applicationLifecycle} from '../server/application.mjs';
 import {spawn} from 'node:child_process';import {once} from 'node:events';import {promises as fs} from 'node:fs';import path from 'node:path';import os from 'node:os';
+import {waitForApplicationStop} from '../src/utils/applicationShutdown';
+
+test('shutdown probes finish response bodies before retrying and recognize connection refusal',async()=>{
+ let calls=0,bodyRead=false;
+ const fetcher=(async()=>{
+  calls++;
+  if(calls===1)return {text:async()=>{await Promise.resolve();bodyRead=true;return '{"stopping":true}';}} as Response;
+  assert.equal(bodyRead,true,'do not leave a successful probe body pending');
+  throw new TypeError('Failed to fetch');
+ }) as typeof fetch;
+ assert.equal(await waitForApplicationStop({fetcher,wait:async()=>{},attempts:2}),true);
+ assert.equal(calls,2);
+});
+
+test('probe aborts, timeouts, body errors and HTTP failures do not falsely confirm shutdown',async()=>{
+ const cases=[
+  async()=>{throw new DOMException('Slow connection','TimeoutError');},
+  async()=>{throw new DOMException('Aborted','AbortError');},
+  async()=>new Response(new ReadableStream({start(controller){controller.error(new TypeError('Body interrupted'));}})),
+  async()=>new Response('temporarily unavailable',{status:503}),
+ ];
+ for(const fetcher of cases)assert.equal(await waitForApplicationStop({fetcher:fetcher as typeof fetch,wait:async()=>{},attempts:2}),false);
+ const timedOut=(async(_url,options)=>{
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(options?.signal?.aborted,true);
+  throw new TypeError('Fetch implementation reported an abort as a network error');
+ }) as typeof fetch;
+ assert.equal(await waitForApplicationStop({fetcher:timedOut,wait:async()=>{},attempts:1,timeoutMs:1}),false);
+});
 
 test('shutdown requires a local origin, explicit header and per-process token, then drains active requests',async()=>{
  const app=express();let server:any,drained=false,finishWork:()=>void=()=>{};
  const lifecycle=applicationLifecycle(()=>new Promise<void>(resolve=>server.close(()=>{drained=true;resolve();})));app.use('/api/application',lifecycle.router);app.use(lifecycle.gate);
  app.post('/work',(_req,res)=>{finishWork=()=>{if(!res.writableEnded)res.json({saved:true});};});server=app.listen(0,'127.0.0.1');await once(server,'listening');const url='http://127.0.0.1:'+server.address().port;
  try{
-  const status=await (await fetch(url+'/api/application/status')).json();assert.equal(status.shutdown,true);
+  const initial=await fetch(url+'/api/application/status');assert.equal(initial.headers.get('connection'),'close');const status=await initial.json();assert.equal(status.shutdown,true);
   for(const headers of [{'Content-Type':'application/json'},{'Content-Type':'application/json','X-RadContour':'local',Origin:'https://example.org'}])assert.equal((await fetch(url+'/api/application/shutdown',{method:'POST',headers,body:JSON.stringify({token:status.token})})).status,403);
   assert.equal((await fetch(url+'/api/application/shutdown',{method:'POST',headers:{'Content-Type':'application/json','X-RadContour':'local'},body:JSON.stringify({token:'wrong'})})).status,403);
   const work=fetch(url+'/work',{method:'POST'});await new Promise(r=>setTimeout(r,100));
-  const ack=await fetch(url+'/api/application/shutdown',{method:'POST',headers:{'Content-Type':'application/json','X-RadContour':'local'},body:JSON.stringify({token:status.token})});assert.equal(ack.status,200);assert.deepEqual(await ack.json(),{stopping:true});assert.equal(drained,false);finishWork();assert.deepEqual(await (await work).json(),{saved:true});
+  const ack=await fetch(url+'/api/application/shutdown',{method:'POST',headers:{'Content-Type':'application/json','X-RadContour':'local'},body:JSON.stringify({token:status.token})});assert.equal(ack.status,200);assert.equal(ack.headers.get('connection'),'close');assert.deepEqual(await ack.json(),{stopping:true});assert.equal(drained,false);finishWork();assert.deepEqual(await (await work).json(),{saved:true});
   for(let i=0;i<500&&!drained;i++)await new Promise(r=>setTimeout(r,20));assert.equal(drained,true);
  }finally{finishWork();server.closeAllConnections();server.close();}
 });

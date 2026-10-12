@@ -940,7 +940,7 @@ export default function App() {
         />
 
         {/* Right Panel: Tools, Structure Set, Operations & Stats */}
-        <div className="flex shrink-0 min-h-0"><Detachable id="tools" title={tr('Herramientas y estructuras')}><div className="flex min-h-0" inert={showExit || showCleanup || showBodyModal || showRegistrationModal || showHelp || showMonacoExportModal || !!leaveDialog || isLoading}><StructurePanel onOpenCleanup={()=>{window.focus();setShowCleanup(true);}}
+        <div className="flex shrink-0 min-h-0"><Detachable id="tools" title={tr('Herramientas y estructuras')}>{detachAction=><div className="flex min-h-0" inert={showExit || showCleanup || showBodyModal || showRegistrationModal || showHelp || showMonacoExportModal || !!leaveDialog || isLoading}><StructurePanel detachAction={detachAction} onOpenCleanup={()=>{window.focus();setShowCleanup(true);}}
           workflow={<WorkflowTools series={series} rois={rois} active={activeRoi} z={currentSliceIndex} onJump={setCurrentSliceIndex} onChange={next=>{pushUndo();setRois(next);}}/>}
           onBulkChange={next=>{pushUndo();setRois(next);}} onJump={setCurrentSliceIndex}
           rois={rois}
@@ -991,7 +991,7 @@ export default function App() {
           contourDrawMode={contourDrawMode}
           onChangeContourDrawMode={setContourDrawMode}
           onFillEnclosedHoles={()=>{const canvas=activeImageCanvas.current;if(canvas?.isConnected && canvas.dataset.testid?.startsWith('editable-'))canvas.dispatchEvent(new CustomEvent('ivcs-view-command',{detail:'holes'}));else handleFillEnclosedHoles();}}
-        /></div></Detachable></div>
+        /></div>}</Detachable></div>
 
         {/* Loading Overlay */}
         {isLoading && (

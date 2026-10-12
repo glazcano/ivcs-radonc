@@ -62,6 +62,7 @@ interface MaskCanvasEntry {
 }
 
 interface ViewportProps {
+  paneHeader?:React.ReactNode;
   overlayMasks?:Record<string,{mask:Uint8Array|undefined;cols:number;rows:number}>;
   onEditorZoom?:(zoom:number)=>void;
   contourWidth?:number;
@@ -105,7 +106,7 @@ interface ViewportProps {
 }
 
 export const Viewport: React.FC<ViewportProps> = ({
-  series, embedded=false, secondaryOnly=false, planeLabel='axial', fitIdentity, crosshairPosition, crosshairsVisible, planeIndexLabel, onEditorActivate, onPlaneScroll, onPlaneNavigate, onUpdateRoiMasks,
+  series, paneHeader, embedded=false, secondaryOnly=false, planeLabel='axial', fitIdentity, crosshairPosition, crosshairsVisible, planeIndexLabel, onEditorActivate, onPlaneScroll, onPlaneNavigate, onUpdateRoiMasks,
   currentSliceIndex,
   onSliceChange,
   rois,
@@ -1561,21 +1562,21 @@ export const Viewport: React.FC<ViewportProps> = ({
 <div onPointerEnter={()=>{setDetailPlane('axial');if(canvasRef.current)onEditorActivate?.(canvasRef.current);}} className="relative w-full h-full min-h-0 flex-1 flex flex-col bg-black overflow-hidden border border-[#1C1C1E]">
             {/* Top Badge for Triplanar mode */}
             {(multi || mprViewMode === 'axial') && (
-              <div className="h-8 px-2 flex items-center justify-between shrink-0 bg-zinc-950">
-                <div className="flex items-center gap-2 pointer-events-auto bg-[#111112]/90 border border-[#262626] px-2.5 py-1 rounded backdrop-blur-xs shadow-md text-xs">
-                  <span onDoubleClick={()=>setMprViewMode(multi?'axial':'triplanar')} className="font-bold text-sky-400">{" "}{tr(embedded?(planeLabel==='axial'?'Axial':planeLabel==='coronal'?'Coronal':'Sagital'):'Plano Axial (XY)')}{" "}</span>
-                  <span className="text-[#777]">•</span>
+              <div className="pane-header">
+                {paneHeader}<div className="flex items-center gap-1 shrink-0 text-xs">
+                  {!paneHeader&&<span onDoubleClick={()=>setMprViewMode(multi?'axial':'triplanar')} className="font-bold text-sky-400">{" "}{tr(embedded?(planeLabel==='axial'?'Axial':planeLabel==='coronal'?'Coronal':'Sagital'):'Plano Axial (XY)')}{" "}</span>}
+                  {!paneHeader&&<span className="text-[#777]">•</span>}
                   <span className="text-[#AAA] font-mono text-[11px]">{" "}{tr(planeLabel==='axial'?'Z:':planeLabel==='coronal'?'Y:':'X:')}{" "}{planeIndexLabel || `${currentSliceIndex + 1}/${series?.slices.length || 0}`} 
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
                 <button type="button" onClick={handleResetView} title={tr(embedded&&!standaloneAxial?'Restablecer vista':'Restablecer zoom axial')} aria-label={tr(embedded&&!standaloneAxial?'Restablecer vista':'Restablecer zoom axial')}
-                  className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md">
+                  className="pointer-events-auto min-w-8 h-8 flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer">
                   <RotateCcw className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => onMaximize?onMaximize():setMprViewMode(multi?'axial':'triplanar')} hidden={embedded&&!standaloneAxial}
-                  className="pointer-events-auto p-1 rounded bg-[#111112]/90 border border-[#262626] text-[#777] hover:text-[#D1D1D1] transition cursor-pointer shadow-md"
+                  className="pointer-events-auto min-w-8 h-8 flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
                   title={tr("Maximizar Plano Axial")}
                 >
                   <Maximize2 className="w-3.5 h-3.5" />
@@ -1688,7 +1689,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
     </div>
   );
-  const planeEditor=(plane:ImagePlane,config:PaneConfig,secondaryId?:string)=><ProjectedEditor {...{series,plane,config,secondaryId,studies,registrationState,rois,activeRoi,activeTool,brushRadiusMm,contourDrawMode,windowCenter,windowWidth,onWindowChange,onBrushRadiusChange,onActiveToolChange,huConstraintEnabled,huConstraintMin,huConstraintMax,keyboardDisabled,onUpdateRoiMasks}} onEditorZoom={mprViewMode==='axial'?setEditorZoom:undefined} contourWidth={lineWidth} contourSmooth={smoothContourRendering} standaloneAxial={mprViewMode==='axial'} onMaximize={()=>setMprViewMode(multi?'axial':'triplanar')} onEditorActivate={canvas=>{focusedEditor.current=canvas;onEditorActivate?.(canvas);}} crosshairsVisible={showCrosshairs} coordinates={mprCoords} onNavigate={handleNavigateCoordinates}/>;
+  const planeEditor=(plane:ImagePlane,config:PaneConfig,secondaryId?:string,paneHeader?:React.ReactNode)=><ProjectedEditor {...{series,paneHeader,plane,config,secondaryId,studies,registrationState,rois,activeRoi,activeTool,brushRadiusMm,contourDrawMode,windowCenter,windowWidth,onWindowChange,onBrushRadiusChange,onActiveToolChange,huConstraintEnabled,huConstraintMin,huConstraintMax,keyboardDisabled,onUpdateRoiMasks}} onEditorZoom={mprViewMode==='axial'?setEditorZoom:undefined} contourWidth={lineWidth} contourSmooth={smoothContourRendering} standaloneAxial={mprViewMode==='axial'} onMaximize={()=>setMprViewMode(multi?'axial':'triplanar')} onEditorActivate={canvas=>{focusedEditor.current=canvas;onEditorActivate?.(canvas);}} crosshairsVisible={showCrosshairs} coordinates={mprCoords} onNavigate={handleNavigateCoordinates}/>;
   if(embedded)return <div className="flex flex-col flex-1 min-h-0 min-w-0">{axialPanel}{activeTool==='polygon' && polygonPoints.length>0 && <div className="flex gap-2 text-xs p-1 bg-zinc-950"><button disabled={polygonPoints.length<3} onClick={finishPolygon}>{tr('Finalizar (Enter)')}</button><button onClick={cancelPolygon}>{tr('Cancelar (Esc)')}</button></div>}</div>;
   return (
     <div 
@@ -1696,7 +1697,7 @@ export const Viewport: React.FC<ViewportProps> = ({
       className="relative flex-1 bg-black overflow-hidden flex flex-col select-none border-r border-[#262626]"
     >
       {/* 1. MPR Multiplanar Navigation Top Bar */}
-      <div className="h-10 bg-[#111112] border-b border-[#262626] px-3 flex items-center justify-between z-20 shrink-0">
+      <div className="workspace-viewbar bg-[#111112] border-b border-[#262626] px-2 flex flex-wrap items-center justify-between gap-x-2 z-20 shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-[#888] hidden sm:inline">{" "}{tr("Plano:")}{" "}</span>
 
@@ -1801,8 +1802,8 @@ export const Viewport: React.FC<ViewportProps> = ({
         </div>
       </div>
 
-      <div id="context-toolbar" className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-b border-zinc-800 bg-zinc-950 text-xs shrink-0">
-        <span className="flex items-center gap-2 min-w-0"><i className="w-2 h-2 rounded-full" style={{background:activeRoi?.color || '#888'}}/><strong className="max-w-32 truncate">{activeRoi?.name || tr("Sin ROI activa")}</strong></span>
+      <div id="context-toolbar" className="workspace-contextbar flex flex-wrap items-center gap-x-2 px-2 border-b border-zinc-800 bg-zinc-950 text-xs shrink-0">
+        <span className="flex items-center gap-2 min-w-0"><i className="w-2 h-2 rounded-full" style={{background:activeRoi?.color || '#888'}}/><strong title={activeRoi?.name} className="max-w-32 truncate">{activeRoi?.name || tr("Sin ROI activa")}</strong></span>
         {activeTool === 'zoom' && <span className="text-zinc-400">{tr('Arrastre hacia arriba para acercar y hacia abajo para alejar. También puede usar la rueda.')}</span>}
         <span>{({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),zoom:tr("Zoom"),window:tr("Ventana"),ruler:tr("Regla")})[activeTool]}</span>
         {["brush","eraser","pencil"].includes(activeTool) && <label className={brushHudInfo.visible?'text-sky-300':'text-zinc-300'} title={tr("Radio físico del pincel. Mayús + rueda para ajustar.")}>{" "}{tr("Radio")}{" "}<input aria-label={tr("Radio del pincel")} type="number" min="0.5" max="50" step="0.5" className="w-16 bg-zinc-800 rounded px-1" value={brushRadiusMm} onChange={e=>{const v=Number(e.target.value);if(Number.isFinite(v) && v>=.5 && v<=50)onBrushRadiusChange?.(v);}}/>{" "}{tr("mm")}{" "}</label>}
@@ -1840,7 +1841,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         {mprViewMode==='coronal' || mprViewMode==='sagittal'?planeEditor(mprViewMode,{plane:mprViewMode,mode:'reference'}):mprViewMode==='axial'?planeEditor('axial',{plane:'axial',mode:registrationState?.active?registrationState.fusionMode:'reference'},registrationState?.secondaryStudyId):
         <div ref={workspaceRef} data-testid="multi-layout" className="relative grid flex-1 min-w-0 min-h-0 gap-1 p-1 bg-zinc-950" style={{gridTemplateColumns:mprViewMode==='oneplus2'?`minmax(0,${split}fr) 6px minmax(0,${100-split}fr)`:'repeat(2,minmax(0,1fr))',gridTemplateRows:'repeat(2,minmax(0,1fr))'}}>
           {paneConfigs.slice(0,mprViewMode==='oneplus2'?3:4).map((config,index)=><div key={index} className="flex flex-col min-w-0 min-h-0" style={mprViewMode==='oneplus2'?index===0?{gridColumn:1,gridRow:'1 / 3'}:{gridColumn:3,gridRow:index}:undefined}>
-            <Detachable id={`pane-${index}`} title={tr('Panel principal')} enabled={index===0 && mprViewMode==='oneplus2'}><ConfigurablePane renderEditor={planeEditor} index={index} config={config} onChange={value=>setPaneConfigs(p=>p.map((c,i)=>i===index?value:c))} series={series} studies={studies} coordinates={mprCoords} onNavigate={handleNavigateCoordinates} rois={rois} activeRoiId={activeRoi?.id} registration={registrationState} windowCenter={windowCenter} windowWidth={windowWidth} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} detailPlane={detailPlane} onActivate={setDetailPlane} controls={mprControls} /></Detachable>
+            <Detachable id={`pane-${index}`} title={tr('Panel principal')} enabled={index===0 && mprViewMode==='oneplus2'}>{detachAction=><ConfigurablePane detachAction={detachAction} renderEditor={planeEditor} index={index} config={config} onChange={value=>setPaneConfigs(p=>p.map((c,i)=>i===index?value:c))} series={series} studies={studies} coordinates={mprCoords} onNavigate={handleNavigateCoordinates} rois={rois} activeRoiId={activeRoi?.id} registration={registrationState} windowCenter={windowCenter} windowWidth={windowWidth} showCrosshairs={showCrosshairs} onToggleCrosshairs={()=>setShowCrosshairs(v=>!v)} detailPlane={detailPlane} onActivate={setDetailPlane} controls={mprControls} />}</Detachable>
           </div>)}
           {mprViewMode==='oneplus2' && <div role="separator" aria-label={tr('Distribución de paneles')} aria-orientation="vertical" aria-valuenow={Math.round(split)} aria-valuemin={25} aria-valuemax={80} tabIndex={0} className="bg-zinc-700 hover:bg-blue-500 cursor-col-resize touch-none rounded" style={{gridColumn:2,gridRow:'1 / 3'}} onDoubleClick={()=>setSplit(65)} onKeyDown={e=>{if(e.key==='ArrowLeft' || e.key==='ArrowRight'){e.preventDefault();setSplit(v=>Math.max(25,Math.min(80,v+(e.key==='ArrowLeft'?-2:2))));}}} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const r=workspaceRef.current!.getBoundingClientRect();setSplit(Math.max(25,Math.min(80,100*(e.clientX-r.left)/r.width)));}}} onPointerUp={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}/>}
         </div>}
@@ -1848,7 +1849,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
 {/* Bottom Slice Navigation Slider Bar matching Sophisticated Dark */}
 {series && series.slices.length > 0 && (
-        <div className="h-11 bg-[#111112] border-t border-[#262626] px-5 flex items-center justify-between gap-4 text-xs text-[#D1D1D1] z-10">
+        <div className="min-h-8 shrink-0 bg-[#111112] border-t border-[#262626] px-2 flex items-center justify-between gap-2 text-xs text-[#D1D1D1] z-10">
           {/* Slice controls */}
           <div className="flex items-center gap-1">
             <button
