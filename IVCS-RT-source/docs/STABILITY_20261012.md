@@ -52,3 +52,19 @@ extend coverage using the existing DICOM import/export and library browser tests
 Native portable startup and persistence checks remain separate acceptance work.
 Destination-TPS acceptance remains pending as documented in
 [EXTERNAL_ACCEPTANCE.md](EXTERNAL_ACCEPTANCE.md).
+
+## GitHub CI follow-up
+
+The fixes were published in draft PR #1 on branch `codex/stability-ci-20261012`.
+The initial CI run passed the 112 source tests, TypeScript and production build
+on all three platforms. Registration and both editing resolutions also passed
+on Linux and macOS, but the exit browser test hung when Playwright intercepted
+the failing save after a dismissed `beforeunload` dialog.
+
+Reproduced locally with pinned Playwright 1.55.1 and Chromium 140.0.7339.186.
+Replacing interception with a real HTTP 500 from the isolated synthetic test
+server made save/discard checks pass with that browser. The test asserts that
+the failed save was received once, the server remains running, and the retry
+preserves or discards edits as selected. Failure diagnostics now include the
+visible page text and a screenshot. Cross-platform verification of this fix is
+pending the follow-up CI run.
