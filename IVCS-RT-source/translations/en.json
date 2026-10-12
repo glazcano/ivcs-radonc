@@ -7,6 +7,7 @@
     "direction": "ltr"
   },
   "messages": {
+    "Filtros y selección": "Filters and selection",
     " · ON": " · ON",
     "(<= Inicial)": "(<= Start)",
     "(Información Mutua Normalizada NMI o Correlación Cruzada NCC), delimitación de": "(Normalized Mutual Information NMI or Cross-Correlation NCC), delineation of",

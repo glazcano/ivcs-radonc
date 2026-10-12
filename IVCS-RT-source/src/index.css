@@ -1,5 +1,28 @@
 @import "tailwindcss";
 
+/* Compact chrome uses the actual workspace width, including a resized sidebar. */
+.workspace-viewbar, .workspace-contextbar { min-height: 32px; }
+.workspace-viewbar > div, .workspace-contextbar > div { min-height: 32px; }
+.workspace-viewbar button, .workspace-contextbar button { min-height: 28px; }
+.workspace-contextbar > label, .workspace-contextbar > select { min-height: 28px; }
+.pane-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  background: #09090b;
+}
+.pane-controls select { font-size: 12px; flex-shrink: 0; max-width: 100%; }
+.pane-controls { flex-wrap: wrap; }
+.structure-sidebar { container-type: inline-size; }
+.roi-filters[open] .filter-chevron { transform: rotate(90deg); }
+@container (max-width: 340px) {
+  .structure-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @layer base {
   html, body, #root {
     height: 100%;

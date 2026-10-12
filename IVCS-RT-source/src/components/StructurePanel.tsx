@@ -53,6 +53,7 @@ import { ToolsPanelSection } from './ToolsPanelSection';
 import { AsymmetricMarginInputs } from './AsymmetricMarginInputs';
 
 interface StructurePanelProps {
+  detachAction?:React.ReactNode;
   onOpenCleanup?:()=>void;
   workflow?:React.ReactNode;
   onBulkChange?:(r:StructureRoi[])=>void;
@@ -126,7 +127,7 @@ export type MainTabType = 'tools' | 'structures' | 'operations' | 'stats';
 export type OpSubTabType = 'booleans' | 'margins' | 'interpolation';
 
 export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
-  workflow,onBulkChange,onJump,onOpenCleanup,
+  detachAction,workflow,onBulkChange,onJump,onOpenCleanup,
   rois,
   activeRoi,
   onSelectRoi,
@@ -170,7 +171,7 @@ export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
   onFillEnclosedHoles,
   onResetView
 }) => {
-  const [collapsed,setCollapsed]=useState(false),[panelWidth,setPanelWidth]=useState(360),[query,setQuery]=useState(''),[selected,setSelected]=useState<string[]>([]),[grouped,setGrouped]=useState(false),[onlyFavorites,setOnlyFavorites]=useState(false);
+  const [collapsed,setCollapsed]=useState(false),[panelWidth,setPanelWidth]=useState(()=>window.innerWidth<1600?320:360),[query,setQuery]=useState(''),[selected,setSelected]=useState<string[]>([]),[grouped,setGrouped]=useState(false),[onlyFavorites,setOnlyFavorites]=useState(false);
   React.useEffect(()=>{getPreferences().then(p=>{if(p.panelWidth)setPanelWidth(Math.max(280,Math.min(560,p.panelWidth)));}).catch(()=>{});},[]);
   const [activeTab, setActiveTab] = useState<MainTabType>('structures');
   const [opSubTab, setOpSubTab] = useState<OpSubTabType>('booleans');
@@ -397,67 +398,63 @@ export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
     setActiveTab('structures');
   };
 
-  if(collapsed)return <aside className="w-10 border-l border-zinc-700 bg-zinc-950"><button className="text-blue-200 p-2" title={tr("Mostrar panel")} onClick={()=>setCollapsed(false)}>‹</button></aside>;
+  if(collapsed)return <aside data-collapsed="true" className="w-10 border-l border-zinc-700 bg-zinc-950 flex flex-col items-center"><button className="text-blue-200 p-2" aria-label={tr("Mostrar panel")} title={tr("Mostrar panel")} onClick={()=>setCollapsed(false)}>‹</button>{detachAction}</aside>;
   return (
-    <aside style={{width:panelWidth}} className=" bg-[#0A0A0B] border-l border-[#262626] flex flex-col h-full text-[#D1D1D1] select-none shrink-0">
-      <div className="flex items-center gap-2 px-2 py-1 text-xs border-b border-zinc-700"><button onClick={()=>setCollapsed(true)} title={tr("Ocultar panel")}>{" "}{tr("Ocultar ›")}{" "}</button><input aria-label={tr("Ancho del panel")} className="flex-1 min-w-0" type="range" min="280" max="560" step="10" value={panelWidth} onChange={e=>setPanelWidth(Number(e.target.value))} onPointerUp={()=>void savePreferences({panelWidth}).catch(()=>{})}/></div>
-      <div className="flex flex-wrap gap-1 p-2 border-b border-zinc-800">{(["brush","eraser","pencil","polygon","threshold","pan","window","ruler","zoom"] as ToolType[]).map(tool=><button key={tool} id={`btn-contour-tool-${tool}`} title={({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),window:tr("Ventana"),ruler:tr("Regla"),zoom:tr("Zoom")})[tool]} aria-label={({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),window:tr("Ventana"),ruler:tr("Regla"),zoom:tr("Zoom")})[tool]} onClick={()=>onSelectTool(tool)} className={'p-2 rounded '+(activeTool===tool?'bg-blue-800 text-white':'bg-zinc-900 text-zinc-300')}>{React.createElement(({brush:Paintbrush,eraser:Eraser,pencil:PenTool,polygon:Hexagon,threshold:Filter,pan:Move,window:SunMedium,ruler:Ruler,zoom:Expand})[tool],{size:16})}</button>)}</div>
+    <aside style={{width:panelWidth}} className=" structure-sidebar bg-[#0A0A0B] border-l border-[#262626] flex flex-col h-full text-[#D1D1D1] select-none shrink-0">
+      <div className="flex items-center gap-2 px-2 min-h-8 text-xs border-b border-zinc-700"><button onClick={()=>setCollapsed(true)} title={tr("Ocultar panel")}>{" "}{tr("Ocultar ›")}{" "}</button><input aria-label={tr("Ancho del panel")} className="flex-1 min-w-0" type="range" min="280" max="560" step="10" value={panelWidth} onChange={e=>setPanelWidth(Number(e.target.value))} onPointerUp={()=>void savePreferences({panelWidth}).catch(()=>{})}/>{detachAction}</div>
+      <div className="flex flex-wrap gap-0.5 p-1 border-b border-zinc-800">{(["brush","eraser","pencil","polygon","threshold","pan","window","ruler","zoom"] as ToolType[]).map(tool=><button key={tool} id={`btn-contour-tool-${tool}`} title={({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),window:tr("Ventana"),ruler:tr("Regla"),zoom:tr("Zoom")})[tool]} aria-label={({brush:tr("Pincel"),eraser:tr("Borrador"),pencil:tr("Lápiz"),polygon:tr("Polígono"),threshold:tr("Umbral conectado"),pan:tr("Desplazar"),window:tr("Ventana"),ruler:tr("Regla"),zoom:tr("Zoom")})[tool]} onClick={()=>onSelectTool(tool)} className={'p-2 rounded '+(activeTool===tool?'bg-blue-800 text-white':'bg-zinc-900 text-zinc-300')}>{React.createElement(({brush:Paintbrush,eraser:Eraser,pencil:PenTool,polygon:Hexagon,threshold:Filter,pan:Move,window:SunMedium,ruler:Ruler,zoom:Expand})[tool],{size:16})}</button>)}</div>
       {/* Primary Tab Navigation */}
-      <div className="grid grid-cols-4 bg-[#111112] border-b border-[#262626] text-xs font-medium">
+      <div className="structure-tabs grid grid-cols-4 bg-[#111112] border-b border-[#262626] text-xs font-medium">
         <button
           id="tab-tools"
           onClick={() => setActiveTab('tools')}
-          className={`py-2.5 flex flex-col items-center gap-1 border-b-2 transition cursor-pointer ${
+          className={`min-h-8 flex items-center justify-center gap-1 min-w-0 border-b-2 transition cursor-pointer ${
             activeTab === 'tools'
               ? 'border-blue-500 text-blue-400 bg-[#1A1A1B]/40 font-semibold'
               : 'border-transparent text-[#888] hover:text-[#D1D1D1] hover:bg-[#1A1A1B]/20'
           }`}
           title={tr("Herramientas de Contorno y Visor")}
         >
-          <Paintbrush className="w-3.5 h-3.5" />
-          <span className="text-[11px] truncate px-1">{" "}{tr("Ajustes")}{" "}</span>
+          <span className="text-xs px-1">{" "}{tr("Ajustes")}{" "}</span>
         </button>
 
         <button
           id="tab-structures"
           onClick={() => setActiveTab('structures')}
-          className={`py-2.5 flex flex-col items-center gap-1 border-b-2 transition cursor-pointer ${
+          className={`min-h-8 flex items-center justify-center gap-1 min-w-0 border-b-2 transition cursor-pointer ${
             activeTab === 'structures'
               ? 'border-blue-500 text-blue-400 bg-[#1A1A1B]/40 font-semibold'
               : 'border-transparent text-[#888] hover:text-[#D1D1D1] hover:bg-[#1A1A1B]/20'
           }`}
           title={tr("Lista de Estructuras (ROIs)")}
         >
-          <Layers className="w-3.5 h-3.5" />
-          <span className="text-[11px] truncate px-1">{" "}{tr("Estructuras (")}{" "}{rois.length})</span>
+          <span className="text-xs px-1">{" "}{tr("Estructuras")}</span>
         </button>
 
         <button
           id="tab-operations"
           onClick={() => setActiveTab('operations')}
-          className={`py-2.5 flex flex-col items-center gap-1 border-b-2 transition cursor-pointer ${
+          className={`min-h-8 flex items-center justify-center gap-1 min-w-0 border-b-2 transition cursor-pointer ${
             activeTab === 'operations'
               ? 'border-blue-500 text-blue-400 bg-[#1A1A1B]/40 font-semibold'
               : 'border-transparent text-[#888] hover:text-[#D1D1D1] hover:bg-[#1A1A1B]/20'
           }`}
           title={tr("Operaciones Booleanas, Márgenes e Interpolación")}
         >
-          <Split className="w-3.5 h-3.5" />
-          <span className="text-[11px] truncate px-1">{" "}{tr("Operaciones")}{" "}</span>
+          <span className="text-xs px-1">{" "}{tr("Operaciones")}{" "}</span>
         </button>
 
         <button
           id="tab-stats"
           onClick={() => setActiveTab('stats')}
-          className={`py-2.5 flex flex-col items-center gap-1 border-b-2 transition cursor-pointer ${
+          className={`min-h-8 flex items-center justify-center gap-1 min-w-0 border-b-2 transition cursor-pointer ${
             activeTab === 'stats'
               ? 'border-blue-500 text-blue-400 bg-[#1A1A1B]/40 font-semibold'
               : 'border-transparent text-[#888] hover:text-[#D1D1D1] hover:bg-[#1A1A1B]/20'
           }`}
           title={tr("Estadísticas de Volúmenes y Radiodensidad HU")}
         >
-          <BarChart3 className="w-3.5 h-3.5" />
-          <span className="text-[11px] truncate px-1">{" "}{tr("Estadísticas")}{" "}</span>
+          <span className="text-xs px-1">{" "}{tr("Estadísticas")}{" "}</span>
         </button>
       </div>
 
@@ -496,10 +493,10 @@ export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
 
       {/* Tab 2: Structures (ROIs) */}
       {activeTab === 'structures' && (
-        <div className="flex-1 flex flex-col overflow-hidden p-3.5 gap-3">
+        <div className="flex-1 flex flex-col overflow-hidden p-2 gap-2">
           {/* Top action: Add Structure Button */}
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-[#888]">{" "}{tr("Estructuras (")}{" "}{rois.length})
+            <span className="text-xs text-zinc-400 shrink-0">{rois.length} ROI</span><span className="sr-only text-[11px] font-semibold text-[#888]">{" "}{tr("Estructuras (")}{" "}{rois.length})
             </span>
             <div className="flex items-center gap-1.5">
               {onOpenBodyModal && (
@@ -537,7 +534,7 @@ export const StructurePanel: React.FC<StructurePanelProps> = React.memo(({
             </div>
           </div>
 
-          <div className="space-y-1 text-xs"><input aria-label={tr("Buscar estructuras")} placeholder={tr("Nombre o tipo de ROI…")} className="w-full bg-zinc-900 border border-zinc-700 p-1" value={query} onChange={e=>setQuery(e.target.value)}/><div className="flex flex-wrap gap-2"><label><input type="checkbox" checked={grouped} onChange={e=>setGrouped(e.target.checked)}/>{" "}{tr("Por tipo")}{" "}</label><label><input type="checkbox" checked={onlyFavorites} onChange={e=>setOnlyFavorites(e.target.checked)}/>{" "}{tr("Favoritas")}{" "}</label><button onClick={()=>onBulkChange?.(rois.map(r=>({...r,visible:r.id===activeRoi?.id})))}>{" "}{tr("Solo activa")}{" "}</button><button onClick={()=>onBulkChange?.(rois.map(r=>selected.includes(r.id)?{...r,visible:false}:r))}>{" "}{tr("Ocultar selección (")}{" "}{selected.length})</button><button onClick={()=>onBulkChange?.(rois.map(r=>selected.includes(r.id)?{...r,visible:true}:r))}>{" "}{tr("Mostrar selección")}{" "}</button></div></div>
+          <div className="space-y-1 text-xs"><input aria-label={tr("Buscar estructuras")} placeholder={tr("Nombre o tipo de ROI…")} className="w-full bg-zinc-900 border border-zinc-700 p-1" value={query} onChange={e=>setQuery(e.target.value)}/><details className="roi-filters"><summary className="min-h-7 flex items-center gap-2 cursor-pointer text-zinc-300"><span className="filter-chevron" aria-hidden="true">▸</span>{tr("Filtros y selección")}<span className="text-blue-300">{grouped?tr("Por tipo"):""}{onlyFavorites?` · ${tr("Favoritas")}`:""}{selected.length?` · ${selected.length}`:""}</span></summary><div className="flex flex-wrap gap-x-2 gap-y-1 py-1"><label><input type="checkbox" checked={grouped} onChange={e=>setGrouped(e.target.checked)}/>{" "}{tr("Por tipo")}{" "}</label><label><input type="checkbox" checked={onlyFavorites} onChange={e=>setOnlyFavorites(e.target.checked)}/>{" "}{tr("Favoritas")}{" "}</label><button onClick={()=>onBulkChange?.(rois.map(r=>({...r,visible:r.id===activeRoi?.id})))}>{" "}{tr("Solo activa")}{" "}</button><button onClick={()=>onBulkChange?.(rois.map(r=>selected.includes(r.id)?{...r,visible:false}:r))}>{" "}{tr("Ocultar selección (")}{" "}{selected.length})</button><button onClick={()=>onBulkChange?.(rois.map(r=>selected.includes(r.id)?{...r,visible:true}:r))}>{" "}{tr("Mostrar selección")}{" "}</button></div></details></div>
           {workflow}
           {/* ROI List */}
           <div className="flex-1 overflow-y-auto space-y-1 pr-1">
