@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {tr} from '../i18n';
 import {hasOtherApplicationWindows} from '../utils/applicationPeers';
+import {waitForApplicationStop} from '../utils/applicationShutdown';
 
 export function ApplicationExit({dirty,busy,save,onDialogChange}:{dirty:()=>boolean;busy:boolean;save:()=>Promise<void>;onDialogChange:(open:boolean)=>void}){
  const [open,setOpen]=useState(false),[working,setWorking]=useState(false),[closed,setClosed]=useState(false),[serverStopped,setServerStopped]=useState(false),[error,setError]=useState('');
@@ -25,8 +26,7 @@ export function ApplicationExit({dirty,busy,save,onDialogChange}:{dirty:()=>bool
    const result=await response.json();if(result.stopping!==true)throw new Error('Respuesta de cierre no válida.');
    finished.current=true;setClosed(true);setOpen(false);window.dispatchEvent(new Event('ivcs-shutdown-complete'));
    // Wait for outstanding requests to drain. A successful status response means it is still running.
-   let stopped=false;
-   for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,250));try{await fetch('/api/application/status',{cache:'no-store',signal:AbortSignal.timeout(500)});}catch{stopped=true;break;}}
+   const stopped=await waitForApplicationStop();
    if(!stopped){setError('El servidor está terminando operaciones pendientes. Espere antes de mover la carpeta portable.');return;}
    setServerStopped(true);window.close();
   }catch(e){setError((e as Error).message);}finally{setWorking(false);}

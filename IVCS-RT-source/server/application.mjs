@@ -5,7 +5,10 @@ export function applicationLifecycle(stop){
  const token=randomUUID(),router=express();let stopping=false;
  router.use((req,res,next)=>{
   if(!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.host||'') || (req.headers.origin && req.headers.origin!==`http://${req.headers.host}`))return res.status(403).end();
-  res.setHeader('Cache-Control','no-store');next();
+  res.setHeader('Cache-Control','no-store');
+  // A status probe must not keep a pre-shutdown HTTP connection alive while
+  // server.close waits for it to drain. Other requests finish normally.
+  res.setHeader('Connection','close');next();
  });
  router.get('/status',(_req,res)=>res.json({application:'IVCS RT',shutdown:true,token,stopping}));
  router.post('/shutdown',express.json({limit:'1kb'}),(req,res)=>{

@@ -2,7 +2,7 @@ import {createRequire} from 'node:module';import express from 'express';import {
 import {libraryRouter,createLibrary} from '../server/library.mjs';import {applicationLifecycle} from '../server/application.mjs';import {sessionRecords} from '../src/utils/sessionStream';import {defaultRegistration} from '../src/utils/libraryClient';
 const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE||'playwright');const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 const diagnostics:any[]=[];
-try{for(let iteration=0;iteration<Number(process.env.IVCS_EXIT_REPETITIONS||1);iteration++)for(const choice of ['save','discard']){
+try{for(let iteration=0;iteration<Number(process.env.IVCS_EXIT_REPETITIONS||3);iteration++)for(const choice of ['save','discard']){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ivcs-exit-browser-')),app=express();let server:any,shutdowns=0,failSessionSave=false,failedSaves=0;
  const trace:any={iteration,choice,requests:[],responses:[],closed:false,stopCalls:0};diagnostics.push(trace);
  app.use((req,res,next)=>{const entry:any={url:req.url,method:req.method,listening:server?.listening,at:Date.now()};trace.requests.push(entry);res.once('finish',()=>{entry.status=res.statusCode;entry.finished=Date.now();});next();});
@@ -22,10 +22,10 @@ try{for(let iteration=0;iteration<Number(process.env.IVCS_EXIT_REPETITIONS||1);i
  if(choice==='save'){
   failSessionSave=true;await page.getByTestId('exit-save').click();await page.getByRole('alert').filter({hasText:'Synthetic save failure'}).waitFor();assert.equal(shutdowns,0);assert.equal((await fetch(url+'/api/application/status')).ok,true);assert.equal(failedSaves,1);failSessionSave=false;
  }
- await page.getByTestId('exit-'+choice).click();await page.getByText('Server stopped. You can now close this tab.',{exact:true}).waitFor({timeout:15000});assert.equal(shutdowns,1);
+ await page.getByTestId('exit-'+choice).click();await page.getByText('Server stopped. You can now close this tab.',{exact:true}).waitFor({timeout:15000});assert.equal(shutdowns,1);assert.equal(trace.closed,true,'the HTTP server must have completed closing');
  const library=createLibrary(root),index=await library.list(),saved=await library.open(index.latest),masks=saved.state.rois[0].sliceMasks;assert.equal(Object.keys(masks).length>0,choice==='save');
  const event=await page.evaluate(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented;});assert.equal(event,false);await context.close();console.log('PASS exit '+choice+': native close warning, cancel, other-window guard, saved data outcome, server stop and fallback page');
-}console.log('Shutdown diagnostics',JSON.stringify(diagnostics));}catch(error){
+}console.log('Shutdown summary',JSON.stringify(diagnostics.map(trace=>({iteration:trace.iteration,choice:trace.choice,closed:trace.closed,stopCalls:trace.stopCalls,closeMs:trace.closedAt-trace.stopAt,postStopRequests:trace.requests.filter((entry:any)=>entry.at>=trace.stopAt).length}))));}catch(error){
  console.error('Shutdown diagnostics',JSON.stringify(diagnostics));
  for(const page of browser.contexts().flatMap(context=>context.pages())){
   console.error('Exit failure UI:',await page.locator('body').innerText().catch(()=>'<closed>'));
