@@ -3,7 +3,7 @@ import {libraryRouter,createLibrary} from '../server/library.mjs';import {applic
 const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE||'playwright');const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 try{for(const choice of ['save','discard']){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ivcs-exit-browser-')),app=express();let server:any,shutdowns=0,failSessionSave=false,failedSaves=0;
- const lifecycle=applicationLifecycle(()=>new Promise<void>(resolve=>{shutdowns++;server.close(resolve);}));app.use('/api/application',lifecycle.router);app.use(lifecycle.gate);
+ const lifecycle=applicationLifecycle(()=>new Promise<void>(resolve=>{shutdowns++;server.close(resolve);server.closeIdleConnections();}));app.use('/api/application',lifecycle.router);app.use(lifecycle.gate);
  // Inject the failure at the HTTP server so the real browser fetch/error path
  // is exercised without request interception after a beforeunload dialog.
  app.use('/api/library/session',(req,res,next)=>{
