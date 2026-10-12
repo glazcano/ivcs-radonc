@@ -9,6 +9,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      IVCS_PLAYWRIGHT_MODULE: ../build/browser-tools/node_modules/playwright
+      IVCS_BROWSER_CHANNEL: chromium
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -26,9 +29,11 @@ jobs:
       - run: npm install --prefix build/browser-tools --no-audit --no-fund playwright@1.55.1
       - run: node build/browser-tools/node_modules/playwright/cli.js install --with-deps chromium
       - run: node --import tsx tests/registration-browser.mts
+      - run: node --import tsx tests/multiplanar-editing-browser.mts
+      - run: node --import tsx tests/multiplanar-editing-browser.mts
         env:
-          IVCS_PLAYWRIGHT_MODULE: ../build/browser-tools/node_modules/playwright
-          IVCS_BROWSER_CHANNEL: chromium
+          IVCS_MASK_SCALE: '2'
+      - run: node --import tsx tests/application-exit-browser.mts
       - uses: actions/upload-artifact@v4
         if: always()
         with:

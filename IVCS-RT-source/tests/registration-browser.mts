@@ -9,6 +9,28 @@ try{
  const d=createDemoRadiotherapyDataset(),s=d.series;
  const session=sessionRecords({format:'radcontour-session',version:1,series:s,studies:d.studies,rois:d.initialRois,currentSliceIndex:32,activeRoiId:d.initialRois[0].id,windowCenter:40,windowWidth:400,registrationState:d.registrationState});
  const page=await browser.newPage({viewport:{width:1500,height:1000}}),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+ // Keep the first registration result pending until cancellation. Fast machines
+ // can finish before Playwright observes the cancel button or progress update.
+ // All real worker progress is delivered; subsequent runs complete normally.
+ await page.addInitScript({content:`
+  const NativeWorker = window.Worker;
+  let holdFirstRegistration = true;
+  window.Worker = class extends NativeWorker {
+   constructor(...args) {
+    super(...args);
+    this.addEventListener('message', event => {
+     if (this.holdResult && Object.hasOwn(event.data, 'result')) event.stopImmediatePropagation();
+    });
+   }
+   postMessage(message, ...args) {
+    if (message.kind === 'registrationRun' && holdFirstRegistration) {
+     this.holdResult = true;
+     holdFirstRegistration = false;
+    }
+    return super.postMessage(message, ...args);
+   }
+  };
+ `});
  await page.goto('http://127.0.0.1:'+(server.address() as any).port);
  const handle=await fs.open(path.join(root,'synthetic.ivcs'),'w');try{for(const record of session)await handle.write(record);}finally{await handle.close();}
  await page.locator('input[accept=".json,.ivcs"]').setInputFiles(path.join(root,'synthetic.ivcs')); 
@@ -63,7 +85,7 @@ try{
  // A generous physical VOI for live automatic registration and cancellation.
  await dialog.getByRole('button',{name:'Whole volume',exact:true}).click();
  await dialog.getByLabel('VOI X min').fill('60');await dialog.getByLabel('VOI X max').fill('190');await dialog.getByLabel('VOI Y min').fill('60');await dialog.getByLabel('VOI Y max').fill('190');await dialog.getByLabel('Use VOI for automatic registration').check();
- await dialog.getByRole('button',{name:'Compute automatic 3D registration',exact:true}).click();await dialog.getByRole('button',{name:'Cancel computation',exact:true}).waitFor();await dialog.getByRole('status').filter({hasText:'%'}).waitFor({timeout:60000});await dialog.getByRole('button',{name:'Cancel computation',exact:true}).click();await dialog.getByRole('alert').waitFor();
+ await dialog.getByRole('button',{name:'Compute automatic 3D registration',exact:true}).click();await dialog.getByRole('button',{name:'Cancel calculation',exact:true}).waitFor();await dialog.getByRole('status').filter({hasText:'%'}).waitFor({timeout:60000});await dialog.getByRole('button',{name:'Cancel calculation',exact:true}).click();await dialog.getByRole('alert').waitFor();
  await dialog.getByRole('button',{name:'Compute automatic 3D registration',exact:true}).click();await dialog.getByRole('button',{name:'Accept transformation',exact:true}).waitFor({timeout:120000});assert.equal(await dialog.locator('canvas').count(),3);
  await page.screenshot({path:'build/registration-auto-voi.png'});await dialog.getByRole('button',{name:'Discard proposal',exact:true}).click();
  await dialog.getByRole('button',{name:'Save group to library',exact:true}).click();await dialog.waitFor({state:'hidden'});

@@ -1,6 +1,6 @@
 import {createRequire} from 'node:module';import express from 'express';import {promises as fs} from 'node:fs';import path from 'node:path';import os from 'node:os';import assert from 'node:assert/strict';
 import {libraryRouter,createLibrary} from '../server/library.mjs';import {applicationLifecycle} from '../server/application.mjs';import {sessionRecords} from '../src/utils/sessionStream';import {defaultRegistration} from '../src/utils/libraryClient';
-const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE||'playwright');const browser=await chromium.launch({headless:true,channel:process.platform==='win32'?'msedge':undefined});
+const require=createRequire(import.meta.url),{chromium}=require(process.env.IVCS_PLAYWRIGHT_MODULE||'playwright');const browser=await chromium.launch({headless:true,channel:process.env.IVCS_BROWSER_CHANNEL || (process.platform==='win32'?'msedge':undefined)});
 try{for(const choice of ['save','discard']){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ivcs-exit-browser-')),app=express();let server:any,shutdowns=0;
  const lifecycle=applicationLifecycle(()=>new Promise<void>(resolve=>{shutdowns++;server.close(resolve);}));app.use('/api/application',lifecycle.router);app.use(lifecycle.gate);app.use('/api/library',libraryRouter(root));app.use(express.static(path.resolve('dist')));app.get('*',(_req,res)=>res.sendFile(path.resolve('dist/index.html')));server=app.listen(0,'127.0.0.1');await new Promise(r=>server.on('listening',r));const url='http://127.0.0.1:'+server.address().port;
