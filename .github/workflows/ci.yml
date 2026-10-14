@@ -43,6 +43,7 @@ jobs:
           IVCS_MASK_SCALE: '2'
       - run: node --import tsx tests/application-exit-browser.mts
       - run: node tests/library-transfer-browser.mjs
+      - run: node --import tsx tests/viewport-overlays-browser.mts
       - run: node tests/view-layout-browser.mjs
       - run: node tests/compact-workspace-browser.mjs
       - uses: actions/upload-artifact@v4

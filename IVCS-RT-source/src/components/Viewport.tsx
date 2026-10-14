@@ -1,3 +1,4 @@
+import {inCanvasScreenSpace} from '../utils/canvasScreenSpace';
 import {maskScale,gridIndex,imageCoordinate} from '../utils/segmentationGrid';
 import {Detachable} from './Detachable';
 import {referencePlane,planeMask,writePlaneMask,ImagePlane} from '../utils/panelPlane';
@@ -667,47 +668,15 @@ export const Viewport: React.FC<ViewportProps> = ({
       const voi = registrationState.voi;
       const isSliceInVoi = currentSliceIndex >= voi.minSlice && currentSliceIndex <= voi.maxSlice;
       if (isSliceInVoi) {
-        ctx.save();
-        ctx.strokeStyle = '#F59E0B';
-        ctx.lineWidth = 1.5 / zoom;
-        ctx.setLineDash([5 / zoom, 3 / zoom]);
-        const voiW = Math.max(10, voi.maxX - voi.minX);
-        const voiH = Math.max(10, voi.maxY - voi.minY);
-        ctx.strokeRect(voi.minX, voi.minY, voiW, voiH);
-
-        // Corner brackets for clinical precision
-        const bLen = Math.min(18, voiW / 4);
-        ctx.setLineDash([]);
-        ctx.strokeStyle = '#FBBF24';
-        ctx.lineWidth = 2 / zoom;
-        ctx.beginPath();
-        // Top-left
-        ctx.moveTo(voi.minX, voi.minY + bLen);
-        ctx.lineTo(voi.minX, voi.minY);
-        ctx.lineTo(voi.minX + bLen, voi.minY);
-        // Top-right
-        ctx.moveTo(voi.maxX - bLen, voi.minY);
-        ctx.lineTo(voi.maxX, voi.minY);
-        ctx.lineTo(voi.maxX, voi.minY + bLen);
-        // Bottom-left
-        ctx.moveTo(voi.minX, voi.maxY - bLen);
-        ctx.lineTo(voi.minX, voi.maxY);
-        ctx.lineTo(voi.minX + bLen, voi.maxY);
-        // Bottom-right
-        ctx.moveTo(voi.maxX - bLen, voi.maxY);
-        ctx.lineTo(voi.maxX, voi.maxY);
-        ctx.lineTo(voi.maxX, voi.maxY - bLen);
-        ctx.stroke();
-
-        // High-contrast label tag
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-        ctx.fillRect(voi.minX, voi.minY - 18 / zoom, 130 / zoom, 16 / zoom);
-        ctx.fillStyle = '#F59E0B';
-        ctx.font = `${Math.max(9, Math.round(10 / zoom))}px monospace`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`VOI COREGISTRO`, voi.minX + 4 / zoom, voi.minY - 9 / zoom);
-        ctx.restore();
+        inCanvasScreenSpace(ctx,point=>{
+          const a=point(voi.minX,voi.minY),b=point(voi.minX+Math.max(10,voi.maxX-voi.minX),voi.minY+Math.max(10,voi.maxY-voi.minY));
+          ctx.strokeStyle='#F59E0B';ctx.lineWidth=1.5;ctx.setLineDash([5,3]);ctx.strokeRect(a.x,a.y,b.x-a.x,b.y-a.y);
+          const right=point(voi.maxX,voi.minY),bottom=point(voi.minX,voi.maxY),corner=point(voi.maxX,voi.maxY);
+          const length=Math.min(18,Math.abs(right.x-a.x)/4,Math.abs(bottom.y-a.y)/4);
+          ctx.setLineDash([]);ctx.strokeStyle='#FBBF24';ctx.lineWidth=2;ctx.beginPath();
+          for(const [pt,dx,dy] of [[a,1,1],[right,-1,1],[bottom,1,-1],[corner,-1,-1]] as const){ctx.moveTo(pt.x,pt.y+dy*length);ctx.lineTo(pt.x,pt.y);ctx.lineTo(pt.x+dx*length,pt.y);}ctx.stroke();
+          ctx.fillStyle='rgba(15, 23, 42, 0.9)';ctx.fillRect(a.x,a.y-18,130,16);ctx.fillStyle='#F59E0B';ctx.font='10px monospace';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('VOI COREGISTRO',a.x+4,a.y-9);
+        });
       }
     }
 
@@ -774,124 +743,34 @@ export const Viewport: React.FC<ViewportProps> = ({
       strokeBoundary(ctx,mask,mw,mh,roi.color,isDraft?getMaskRevision(mask):0);ctx.restore();
     }
 
-    // 3. Render Live Freehand Pencil Stroke Preview
-    const pPts = pencilPointsRef.current;
-    if (pPts.length > 1) {
-      ctx.save();
-      ctx.strokeStyle = activeRoiRef.current ? activeRoiRef.current.color : '#F59E0B';
-      const strokeRadiusPx = Math.max(1, Math.round(brushRadiusMm / (currentSlice?.pixelSpacing[1] || 1)));
-      ctx.lineWidth = Math.max(2, strokeRadiusPx * 2) / zoom;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(pPts[0][0], pPts[0][1]);
-      for (let i = 1; i < pPts.length; i++) {
-        ctx.lineTo(pPts[i][0], pPts[i][1]);
-      }
-      if (contourDrawMode === 'closed' && pPts.length >= 3) {
-        ctx.closePath();
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    // 4. Render Live Polygon Vertices & Rubber-band Line
-    if (polygonPoints.length > 0) {
-      const activeColor = activeRoiRef.current ? activeRoiRef.current.color : '#3B82F6';
-      ctx.strokeStyle = activeColor;
-      ctx.fillStyle = activeColor;
-      ctx.lineWidth = 1.5 / zoom;
-
-      // Draw lines between existing points
-      ctx.beginPath();
-      ctx.moveTo(polygonPoints[0][0], polygonPoints[0][1]);
-      for (let i = 1; i < polygonPoints.length; i++) {
-        ctx.lineTo(polygonPoints[i][0], polygonPoints[i][1]);
-      }
-
-      // Rubberband line to current mouse cursor
-      if (polygonRubberBandRef.current) {
-        ctx.lineTo(polygonRubberBandRef.current[0], polygonRubberBandRef.current[1]);
-      }
-      ctx.stroke();
-
-      // Draw vertex dots
-      for (let i = 0; i < polygonPoints.length; i++) {
-        const pt = polygonPoints[i];
-        ctx.beginPath();
-        const ptRadius = i === 0 ? 4.5 / zoom : 3 / zoom;
-        ctx.arc(pt[0], pt[1], ptRadius, 0, Math.PI * 2);
-        ctx.fill();
-        if (i === 0) {
-          ctx.strokeStyle = '#FFFFFF';
-          ctx.lineWidth = 1.5 / zoom;
-          ctx.stroke();
-        }
-      }
-    }
-
-    // 5. Render Ruler / Measurement
-    if (rulerStart && rulerEnd) {
-      ctx.strokeStyle = '#10B981';
-      ctx.lineWidth = 2 / zoom;
-      ctx.setLineDash([4 / zoom, 2 / zoom]);
-      ctx.beginPath();
-      ctx.moveTo(rulerStart[0], rulerStart[1]);
-      ctx.lineTo(rulerEnd[0], rulerEnd[1]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Calculate distance in mm
-      const dxPx = rulerEnd[0] - rulerStart[0];
-      const dyPx = rulerEnd[1] - rulerStart[1];
-      const distPx = Math.hypot(dxPx, dyPx);
-      const distMm = Math.hypot(dxPx * currentSlice.pixelSpacing[1], dyPx * currentSlice.pixelSpacing[0]);
-
-      // Draw distance label
-      const midX = (rulerStart[0] + rulerEnd[0]) / 2;
-      const midY = (rulerStart[1] + rulerEnd[1]) / 2;
-
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.fillRect(midX - 30 / zoom, midY - 12 / zoom, 60 / zoom, 16 / zoom);
-      ctx.fillStyle = '#34D399';
-      ctx.font = `${Math.max(10, Math.round(11 / zoom))}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${distMm.toFixed(1)} mm`, midX, midY - 4 / zoom);
-    }
-
-    // 6. Render Crosshairs for MPR navigation (Coronal Y in Emerald, Sagittal X in Amber)
-    if ((crosshairsVisible ?? showCrosshairs) && currentSlice) {
-      ctx.save();
-      ctx.lineWidth = 1 / zoom;
-
-      // Vertical line: Sagittal plane (X)
-      const sagX = Math.max(0, Math.min(currentSlice.cols - 1, crosshairPosition?.x ?? mprCoords.x))+.5;
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)'; // Amber
-      ctx.setLineDash([4 / zoom, 4 / zoom]);
-      ctx.beginPath();
-      ctx.moveTo(sagX, 0);
-      ctx.lineTo(sagX, currentSlice.rows);
-      ctx.stroke();
-
-      // Horizontal line: Coronal plane (Y)
-      const corY = Math.max(0, Math.min(currentSlice.rows - 1, crosshairPosition?.y ?? mprCoords.y))+.5;
-      ctx.strokeStyle = 'rgba(16, 185, 129, 0.75)'; // Emerald
-      ctx.beginPath();
-      ctx.moveTo(0, corY);
-      ctx.lineTo(currentSlice.cols, corY);
-      ctx.stroke();
-
-      // Intersection center marker
-      ctx.setLineDash([]);
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1.5 / zoom;
-      ctx.beginPath();
-      ctx.arc(sagX, corY, 4 / zoom, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.restore();
-    }
+    // UI marks are anchored to image coordinates, but shaped/sized in CSS pixels.
+    const pPts=pencilPointsRef.current;
+    if(pPts.length>1)inCanvasScreenSpace(ctx,(point,imageScale)=>{
+      ctx.strokeStyle=activeRoiRef.current?.color || '#F59E0B';
+      ctx.lineWidth=Math.max(2,2*brushRadiusMm/currentSlice.pixelSpacing[1]*imageScale);ctx.lineCap='round';ctx.lineJoin='round';
+      ctx.beginPath();const first=point(pPts[0][0],pPts[0][1]);ctx.moveTo(first.x,first.y);
+      for(let i=1;i<pPts.length;i++){const q=point(pPts[i][0],pPts[i][1]);ctx.lineTo(q.x,q.y);}if(contourDrawMode==='closed' && pPts.length>=3)ctx.closePath();ctx.stroke();
+    });
+    if(polygonPoints.length)inCanvasScreenSpace(ctx,point=>{
+      const color=activeRoiRef.current?.color || '#3B82F6';ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=1.5;
+      ctx.beginPath();const first=point(polygonPoints[0][0],polygonPoints[0][1]);ctx.moveTo(first.x,first.y);
+      for(let i=1;i<polygonPoints.length;i++){const q=point(polygonPoints[i][0],polygonPoints[i][1]);ctx.lineTo(q.x,q.y);}if(polygonRubberBandRef.current){const q=point(polygonRubberBandRef.current[0],polygonRubberBandRef.current[1]);ctx.lineTo(q.x,q.y);}ctx.stroke();
+      polygonPoints.forEach((pt,i)=>{const q=point(pt[0],pt[1]);ctx.beginPath();ctx.arc(q.x,q.y,i===0?4.5:3,0,Math.PI*2);ctx.fill();if(i===0){ctx.strokeStyle='#FFFFFF';ctx.stroke();}});
+    });
+    if(rulerStart && rulerEnd)inCanvasScreenSpace(ctx,point=>{
+      const a=point(rulerStart[0],rulerStart[1]),b=point(rulerEnd[0],rulerEnd[1]);ctx.strokeStyle='#10B981';ctx.lineWidth=2;ctx.setLineDash([4,2]);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);
+      const distance=Math.hypot((rulerEnd[0]-rulerStart[0])*currentSlice.pixelSpacing[1],(rulerEnd[1]-rulerStart[1])*currentSlice.pixelSpacing[0]);
+      const x=(a.x+b.x)/2,y=(a.y+b.y)/2,label=distance.toFixed(1)+' mm';ctx.font='11px monospace';const w=Math.max(60,ctx.measureText(label).width+8);
+      ctx.fillStyle='rgba(15, 23, 42, 0.85)';ctx.fillRect(x-w/2,y-12,w,16);ctx.fillStyle='#34D399';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,x,y-4);
+    });
+    if(crosshairsVisible ?? showCrosshairs)inCanvasScreenSpace(ctx,point=>{
+      const x=Math.max(0,Math.min(currentSlice.cols-1,crosshairPosition?.x ?? mprCoords.x))+.5;
+      const y=Math.max(0,Math.min(currentSlice.rows-1,crosshairPosition?.y ?? mprCoords.y))+.5;
+      const a=point(x,0),b=point(x,currentSlice.rows),c=point(0,y),d=point(currentSlice.cols,y),center=point(x,y);
+      ctx.lineWidth=1;ctx.setLineDash([4,4]);ctx.strokeStyle='rgba(245, 158, 11, 0.75)';ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+      ctx.strokeStyle='rgba(16, 185, 129, 0.75)';ctx.beginPath();ctx.moveTo(c.x,c.y);ctx.lineTo(d.x,d.y);ctx.stroke();ctx.setLineDash([]);
+      ctx.strokeStyle='#FFFFFF';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(center.x,center.y,4,0,Math.PI*2);ctx.stroke();
+    });
 
     ctx.restore();
   }, [
