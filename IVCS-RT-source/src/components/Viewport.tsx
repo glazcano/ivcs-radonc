@@ -230,6 +230,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   // Ruler state
   const [rulerStart, setRulerStart] = useState<[number, number] | null>(null);
   const [rulerEnd, setRulerEnd] = useState<[number, number] | null>(null);
+  const rulerDrawingRef = useRef(false);
 
   // Cine Playback
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -322,6 +323,7 @@ export const Viewport: React.FC<ViewportProps> = ({
   useEffect(() => {
     pendingSliceIndexRef.current = currentSliceIndex;
     isDrawingRef.current = false;
+    rulerDrawingRef.current = false;
     currentDraftMaskRef.current = null;
     originalStrokeMaskRef.current = null;
     setPolygonPoints([]);pencilPointsRef.current=[];polygonRubberBandRef.current=null;
@@ -939,6 +941,7 @@ export const Viewport: React.FC<ViewportProps> = ({
     if (activeTool === 'ruler') {
       const coords = screenToImageCoords(e.clientX, e.clientY);
       if (coords) {
+        rulerDrawingRef.current = true;
         setRulerStart([coords.x, coords.y]);
         setRulerEnd([coords.x, coords.y]);
       }
@@ -1103,7 +1106,7 @@ export const Viewport: React.FC<ViewportProps> = ({
     }
 
     // 2. Ruler update
-    if (activeTool === 'ruler' && rulerStart) {
+    if (activeTool === 'ruler' && rulerStart && rulerDrawingRef.current) {
       if (coords) {
         setRulerEnd([coords.x, coords.y]);
       }
@@ -1180,6 +1183,7 @@ export const Viewport: React.FC<ViewportProps> = ({
 
   // Mouse Up Event Handler
   const handleMouseUp = () => {
+    rulerDrawingRef.current = false;
     zoomDragRef.current = null;
     setIsDragging(false);
 
@@ -1485,7 +1489,7 @@ export const Viewport: React.FC<ViewportProps> = ({
         }}
         onPointerMove={handleMouseMove}
         onPointerUp={(e) => {
-          if (isDrawingRef.current) handleMouseMove(e);
+          if (isDrawingRef.current || rulerDrawingRef.current) handleMouseMove(e);
           try {
             if (e.currentTarget.hasPointerCapture(e.pointerId)) {
               e.currentTarget.releasePointerCapture(e.pointerId);
